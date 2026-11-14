@@ -3,21 +3,26 @@ package com.orderai.workbench.controller;
 import com.orderai.workbench.service.RefundService;
 import com.orderai.workbench.api.ApiResponse;
 import com.orderai.workbench.dto.response.RefundResponse;
-import java.util.List;
 import java.util.Map;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import com.orderai.workbench.repository.RefundRequestRepository;
+import com.orderai.workbench.entity.RefundRequest;
 
 @RestController
 @RequestMapping("/api/refund-requests")
 public class RefundController {
   private final RefundService service;
+  private final RefundRequestRepository refunds;
 
   /**
    * Initializes this component with its required dependencies.
    * @param s input used by this operation
    */
-  public RefundController(RefundService s) {
+  public RefundController(RefundService s, RefundRequestRepository refunds) {
     service = s;
+    this.refunds = refunds;
   }
 
   @PostMapping
@@ -38,8 +43,8 @@ public class RefundController {
    * Returns refund requests in reverse creation order.
    * @return the result of this operation
    */
-  public ApiResponse<List<RefundResponse>> list() {
-    return ApiResponse.success(service.list());
+  public ApiResponse<Page<RefundRequest>> list(Pageable pageable) {
+    return ApiResponse.success(refunds.findAll(pageable));
   }
 
   @PostMapping("/{id}/approve")
@@ -51,4 +56,12 @@ public class RefundController {
   public ApiResponse<RefundResponse> approve(@PathVariable long id) {
     return ApiResponse.success(service.approve(id));
   }
+
+  @PutMapping("/{id}")
+  public ApiResponse<RefundResponse> update(@PathVariable long id, @RequestBody Map<String,String> payload) {
+    return ApiResponse.success(service.update(id, payload));
+  }
+
+  @DeleteMapping("/{id}")
+  public ApiResponse<Void> delete(@PathVariable long id) { service.delete(id); return ApiResponse.success(null); }
 }

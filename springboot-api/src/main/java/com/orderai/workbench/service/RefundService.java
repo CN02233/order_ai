@@ -10,4 +10,6 @@ public interface RefundService {
   List<RefundResponse> list();
 
   RefundResponse approve(long id);
+  RefundResponse update(long id, Map<String,String> payload);
+  void delete(long id);
 }

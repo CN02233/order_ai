@@ -78,4 +78,14 @@ public class RefundServiceImpl implements RefundService {
     repo.save(r);
     return new RefundResponse(r.id, r.orderNumber, r.reason, r.status, null);
   }
+
+  @Transactional
+  public RefundResponse update(long id, Map<String,String> payload) {
+    RefundRequest r = repo.findById(id).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Refund not found"));
+    if ("PENDING_MANUAL_APPROVAL".equals(r.status) && payload.get("reason") != null) r.reason = payload.get("reason");
+    repo.save(r); return new RefundResponse(r.id, r.orderNumber, r.reason, r.status, null);
+  }
+
+  @Transactional
+  public void delete(long id) { repo.delete(repo.findById(id).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Refund not found"))); }
 }
