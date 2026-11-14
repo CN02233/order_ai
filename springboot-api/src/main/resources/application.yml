@@ -1,0 +1,10 @@
+spring:
+  profiles:
+    active: local
+  sql:
+    init:
+      mode: never
+
+logging:
+  level:
+    com.orderai.workbench: INFO
