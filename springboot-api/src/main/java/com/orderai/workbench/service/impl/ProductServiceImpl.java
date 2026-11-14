@@ -31,6 +31,6 @@ public class ProductServiceImpl implements ProductService {
         repo.findBySku(sku)
             .orElseThrow(
                 () -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Product not found"));
-    return new ProductResponse(p.sku, p.name, p.stock, p.price);
+    return new ProductResponse(p.id, p.sku, p.name, p.stock, p.price);
   }
 }

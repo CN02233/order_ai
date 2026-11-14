@@ -77,10 +77,12 @@ public class CustomerServiceImpl implements CustomerService {
             .map(
                 order ->
                     new OrderResponse(
+                        order.id,
                         order.orderNumber,
                         order.status,
                         order.trackingNumber == null ? "" : order.trackingNumber,
-                        null))
+                        null,
+                        order.createdAt))
             .toList());
   }
 }

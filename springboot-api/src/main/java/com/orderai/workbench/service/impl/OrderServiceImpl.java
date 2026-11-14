@@ -38,9 +38,11 @@ public class OrderServiceImpl implements OrderService {
                 () -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Order not found"));
     Customer c = customers.findById(o.customerId).orElseThrow();
     return new OrderResponse(
+        o.id,
         o.orderNumber,
         o.status,
         o.trackingNumber == null ? "" : o.trackingNumber,
-        c.email);
+        c.email,
+        o.createdAt);
   }
 }

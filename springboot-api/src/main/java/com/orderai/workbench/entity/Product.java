@@ -20,5 +20,5 @@ public class Product {
   /**
    * Initializes this component with its required dependencies.
    */
-  protected Product() {}
+  public Product() {}
 }

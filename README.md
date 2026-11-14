@@ -25,6 +25,8 @@ Business demo data remains in MySQL and is managed by Java. Python API docs: `ht
 
 Spring Boot connects to the same MySQL database (`order_ai`) as the Python setup and reads connection details and the Python service address from the active `local` profile in `springboot-api/src/main/resources/application-local.yml`. The base `application.yml` activates this profile, so no command-line or IDE environment variables are required. Edit the profile YAML to change these values.
 
+For an existing database, apply `springboot-api/src/main/resources/db/migration/V2__add_order_created_at.sql` once before starting the updated API. New databases should include `created_at` on `orders` as defined in `springboot-api/src/main/resources/schema.sql`.
+
 ```sh
 cd springboot-api
 mvn spring-boot:run
