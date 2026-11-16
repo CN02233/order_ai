@@ -98,6 +98,38 @@ mvn test
 
 The tests run against in-memory H2 with `ddl-auto: create-drop` (`src/test/resources/application-test.yml`) and cover stock reservation, insufficient-stock rollback, cancellation release, the status machine, order deletion (stock release, child cascade, open-refund guard), cumulative refund limits, the refundable-order whitelist, manual review, partial goods receipt, idempotency, and the whole logistics flow (full/partial shipment, processing-only parcel creation, over-shipment refusal, forward-only parcel status, order delivery roll-up, parcel deletion rollback, cascade delete).
 
+## Run the smoke test
+
+The H2 tests prove the rules but never touch a real database, so they cannot catch a broken migration,
+a missing foreign key or a transaction that silently commits. `smoke/smoke_test.py` drives a **running**
+API over HTTP and walks the whole loop: checkout reserves stock, cancellation releases it, refund amounts
+are capped, review is one-shot, returned goods restock only on receipt, parcels move forward only, and
+deleting records respects the audit rules.
+
+```sh
+# with the API already running on 8081
+python3 smoke/smoke_test.py
+
+# against another instance
+python3 smoke/smoke_test.py --base-url http://127.0.0.1:8091
+SMOKE_BASE_URL=http://127.0.0.1:8091 python3 smoke/smoke_test.py
+```
+
+It needs nothing but Python 3 — no third-party packages. Exit code is `0` when every check passes and `1`
+otherwise, so it can gate a deploy. `--keep` skips the cleanup pass if you want to inspect the data.
+
+Two things survive each run **on purpose**, and the script asserts that they do, because they are the
+business rules: an approved refund is retained for audit (its order cannot be deleted) and a product with
+stock movements keeps its ledger (it cannot be deleted). Purge the remains of earlier runs on a
+development database with:
+
+```sh
+mysql -h127.0.0.1 -uroot -p order_ai < smoke/cleanup.sql
+```
+
+That script deletes by name prefix (`ORD-SMOKE-*`, `SMOKE-*`, `smoke+*@example.com`), so only point it at
+a database whose contents you can identify.
+
 ## Run Python tests
 
 ```sh
