@@ -96,7 +96,46 @@ cd springboot-api
 mvn test
 ```
 
-The tests run against in-memory H2 with `ddl-auto: create-drop` (`src/test/resources/application-test.yml`) and cover stock reservation, insufficient-stock rollback, cancellation release, the status machine, order deletion (stock release, child cascade, open-refund guard), cumulative refund limits, the refundable-order whitelist, manual review, partial goods receipt, idempotency, and the whole logistics flow (full/partial shipment, processing-only parcel creation, over-shipment refusal, forward-only parcel status, order delivery roll-up, parcel deletion rollback, cascade delete).
+The tests run against in-memory H2 with `ddl-auto: create-drop` (`src/test/resources/application-test.yml`) and cover stock reservation, insufficient-stock rollback, cancellation release, the status machine, order deletion (stock release, child cascade, open-refund guard), cumulative refund limits, the refundable-order whitelist, manual review, partial goods receipt, idempotency, the whole logistics flow (full/partial shipment, processing-only parcel creation, over-shipment refusal, forward-only parcel status, order delivery roll-up, parcel deletion rollback, cascade delete), and customer deletion (allowed only while the customer owns no order).
+
+## Run frontend tests
+
+The workbench carries two layers, both in `vue-workbench`. They complement the backend suites: the
+Jest run proves the browser refuses illegal options before a request is ever sent, and the Playwright
+run proves the rendered page actually behaves that way.
+
+```sh
+cd vue-workbench
+npm install
+
+npm run test:unit                     # Jest + Vue Test Utils, no backend required
+PW_CHANNEL=chrome npm run test:e2e    # Playwright, needs the API on 8081
+```
+
+`test:unit` mounts `App.vue` with a stubbed HTTP client and covers what the UI must not allow: the
+logistics order dropdown offers only `PROCESSING`, the refund dropdown offers
+`PROCESSING/SHIPPED/DELIVERED` and never `CANCELLED`, editing keeps the record's current order
+visible, the parcel status machine never moves backwards, shipment quantities prefill with the
+remaining units, an inventory row linked to orders keeps its delete button disabled, and every column
+header resolves to a translation instead of a raw field name.
+
+`test:e2e` drives a real browser. It starts the dev server on 8082 itself, reuses two fixture products
+and resets their stock, seeds one customer plus three orders (processing, fully shipped, cancelled),
+asserts the dropdown options and prefilled quantities, then deletes the parcels, orders and customer
+it created. The fixture products stay because their stock movements are append-only and a product with
+movements cannot be deleted by design; they are reused rather than recreated, so the catalogue does
+not grow. Options:
+
+```sh
+PW_CHANNEL=chrome npx playwright test --headed   # watch the clicks
+PW_CHANNEL=chrome npx playwright test -g "库存"   # one test only
+PW_CHANNEL=chrome npx playwright test --ui       # step through, time-travel debugging
+BUSINESS_API_URL=http://127.0.0.1:8091 PW_CHANNEL=chrome npm run test:e2e   # other instance
+```
+
+`PW_CHANNEL=chrome` reuses an installed Chrome instead of Playwright's bundled build; drop it once
+`npx playwright install chromium` has run (required in CI). Failures leave a trace under
+`test-results/`, replayable with `npx playwright show-trace test-results/<case>/trace.zip`.
 
 ## Run the smoke test
 
@@ -144,6 +183,7 @@ Management APIs are paginated and filterable; all responses use the `{status, me
 - `POST /inquiries` classify and persist an inquiry (requires `Idempotency-Key`)
 - `GET /api/customers?limit=200` — customer dropdown for order forms
 - `GET /customers/by-email/{email}` and `/customers/by-email/{email}/orders`
+- `DELETE /api/customers/{id}` — remove a customer that never ordered; refused (409) while any order still belongs to it, because the order keeps its customer for history
 - `GET /api/orders`, `POST /api/orders` — list/create; create reserves stock and snapshots prices
 - `GET /api/orders/{order_number}` — items (with `shipped_quantity`), shipments, refunds, pending/refunded/refundable amounts
 - `PUT /api/orders/{order_number}` — advance status or cancel

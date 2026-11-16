@@ -46,4 +46,11 @@ public class CustomerController {
         .map(ApiResponse::success)
         .orElseGet(() -> ApiResponse.failure("Customer not found"));
   }
+
+  /** Removes a customer that never ordered; an order must keep its customer for history. */
+  @DeleteMapping("/{id}")
+  public ApiResponse<Void> delete(@PathVariable Long id) {
+    service.delete(id);
+    return ApiResponse.success(null);
+  }
 }

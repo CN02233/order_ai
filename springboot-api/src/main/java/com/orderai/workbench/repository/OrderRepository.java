@@ -23,4 +23,7 @@ public interface OrderRepository extends JpaRepository<OrderEntity, Long>, JpaSp
   Optional<OrderEntity> lockById(@Param("id") Long id);
 
   List<OrderEntity> findByCustomerId(Long customerId);
+
+  /** Guards customer deletion: an order keeps its customer, so the FK never dangles. */
+  boolean existsByCustomerId(Long customerId);
 }

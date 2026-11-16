@@ -77,4 +77,17 @@ public class CustomerServiceImpl implements CustomerService {
             .map(order -> views.toDetail(order, customer.get().email))
             .toList());
   }
+
+  /** Deletes a customer that never ordered; an order must keep its customer so its history stays intact. */
+  @Override
+  @Transactional
+  public void delete(Long id) {
+    Customer customer = customers.findById(id)
+        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Customer not found"));
+    if (orders.existsByCustomerId(id)) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT,
+          "Customers with orders cannot be deleted; delete those orders first");
+    }
+    customers.delete(customer);
+  }
 }

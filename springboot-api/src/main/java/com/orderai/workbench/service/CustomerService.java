@@ -15,4 +15,7 @@ public interface CustomerService {
   Optional<CustomerResponse> find(String email);
 
   Optional<List<OrderResponse>> orders(String email);
+
+  /** Deletes a customer that never ordered; an order must keep its customer for history. */
+  void delete(Long id);
 }

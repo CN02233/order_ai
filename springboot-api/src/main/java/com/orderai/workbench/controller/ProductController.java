@@ -95,8 +95,13 @@ public class ProductController {
   @PostMapping
   public ApiResponse<ProductManagementResponse> create(@RequestBody ProductRequest input) {
     requireCatalogueFields(input);
+    String sku = input.sku().trim();
+    // Without this the unique constraint surfaces as a 500 instead of a usable conflict.
+    if (products.findBySku(sku).isPresent()) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT, "Product SKU already exists");
+    }
     Product product = new Product();
-    product.sku = input.sku().trim();
+    product.sku = sku;
     product.name = input.name().trim();
     product.stock = 0;
     product.price = input.price();
