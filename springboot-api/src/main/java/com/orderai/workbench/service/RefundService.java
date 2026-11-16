@@ -1,15 +1,21 @@
 package com.orderai.workbench.service;
 
+import com.orderai.workbench.dto.request.RefundCreateRequest;
+import com.orderai.workbench.dto.request.RefundReceiveRequest;
 import com.orderai.workbench.dto.response.RefundResponse;
-import java.util.List;
-import java.util.Map;
 
 public interface RefundService {
-  RefundResponse create(Map<String, String> payload, String key);
+  RefundResponse create(RefundCreateRequest payload, String key);
 
-  List<RefundResponse> list();
+  RefundResponse find(long id);
 
   RefundResponse approve(long id);
+
+  RefundResponse reject(long id);
+
   RefundResponse update(long id, String reason);
+
   void delete(long id);
+
+  RefundResponse receive(long id, RefundReceiveRequest payload);
 }

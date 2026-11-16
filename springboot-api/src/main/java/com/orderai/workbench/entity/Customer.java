@@ -15,9 +15,6 @@ public class Customer {
   @Column(nullable = false, length = 200)
   public String name;
 
-  /**
-   * Initializes this component with its required dependencies.
-   */
   protected Customer() {}
 
   /** Creates a customer entity with its required fields. */

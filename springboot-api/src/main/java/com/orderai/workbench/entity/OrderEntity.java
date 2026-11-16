@@ -1,6 +1,7 @@
 package com.orderai.workbench.entity;
 
 import jakarta.persistence.*;
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import org.hibernate.annotations.CreationTimestamp;
 
@@ -22,12 +23,15 @@ public class OrderEntity {
   @Column(name = "tracking_number")
   public String trackingNumber;
 
+  @Column(name="total_amount", nullable=false)
+  public BigDecimal totalAmount = BigDecimal.ZERO;
+
+  @Column(name="stock_reserved", nullable=false)
+  public boolean stockReserved;
+
   @CreationTimestamp
   @Column(name = "created_at", nullable = false, updatable = false)
   public LocalDateTime createdAt;
 
-  /**
-   * Initializes this component with its required dependencies.
-   */
   public OrderEntity() {}
 }

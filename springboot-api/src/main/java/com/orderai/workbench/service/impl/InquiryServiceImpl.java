@@ -2,29 +2,30 @@ package com.orderai.workbench.service.impl;
 
 import com.orderai.workbench.entity.Inquiry;
 
-import com.orderai.workbench.repository.InquiryRepository;
-import com.orderai.workbench.service.InquiryService;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.JsonNode;
-import java.io.IOException;
-import java.time.Duration;
-import java.util.*;
-import java.util.UUID;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.MediaType;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
-import org.springframework.web.client.RestClient;
-import org.springframework.web.client.RestClientException;
-import org.springframework.http.HttpStatus;
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.server.ResponseStatusException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.orderai.workbench.dto.InquiryAnalysisRequest;
 import com.orderai.workbench.dto.response.InquiryAnalysisResponse;
 import com.orderai.workbench.dto.response.InquiryResponse;
+import com.orderai.workbench.repository.InquiryRepository;
+import com.orderai.workbench.service.InquiryService;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.*;
+import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientException;
+import org.springframework.web.server.ResponseStatusException;
 
 @Service
 public class InquiryServiceImpl implements InquiryService {
@@ -34,11 +35,6 @@ public class InquiryServiceImpl implements InquiryService {
   private final ObjectMapper objectMapper;
   private final String aiBaseUrl;
 
-  /**
-   * Initializes this component with its required dependencies.
-   * @param r input used by this operation
-   * @param url input used by this operation
-   */
   public InquiryServiceImpl(
       InquiryRepository r,
       ObjectMapper objectMapper,
@@ -55,13 +51,6 @@ public class InquiryServiceImpl implements InquiryService {
   }
 
   @Transactional
-  /**
-   * Creates a business record while honoring the idempotency key.
-   * @param String input used by this operation
-   * @param p input used by this operation
-   * @param key input used by this operation
-   * @return the result of this operation
-   */
   public InquiryResponse create(Map<String, String> p, String key) {
     // Return the stored result for retries instead of creating duplicate inquiries.
     Optional<Inquiry> old = repo.findByIdempotencyKey(key);
@@ -101,7 +90,7 @@ public class InquiryServiceImpl implements InquiryService {
           "POST",
           target,
           "application/json",
-          json.getBytes(java.nio.charset.StandardCharsets.UTF_8).length,
+          json.getBytes(StandardCharsets.UTF_8).length,
           json);
       return pythonClient.post()
           .uri(target)
@@ -118,7 +107,7 @@ public class InquiryServiceImpl implements InquiryService {
                 requestId,
                 status,
                 responseContentType == null ? "unknown" : responseContentType,
-                responseBody == null ? 0 : responseBody.getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
+                responseBody == null ? 0 : responseBody.getBytes(StandardCharsets.UTF_8).length);
             if (!response.getStatusCode().is2xxSuccessful()) {
               log.error(
                   "python_http_error requestId={} status={} response={}",

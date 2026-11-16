@@ -20,13 +20,25 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
       HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
       throws ServletException, IOException {
     long startedAt = System.nanoTime();
-    log.info("Incoming request: method={} path={}", request.getMethod(), request.getRequestURI());
+    String path = request.getRequestURI();
+    boolean loggable = !isStaticResource(path);
+    if (loggable) {
+      log.info("Incoming request: method={} path={}", request.getMethod(), path);
+    }
     try {
       filterChain.doFilter(request, response);
     } finally {
-      long elapsedMs = (System.nanoTime() - startedAt) / 1_000_000;
-      log.info("Request completed: method={} path={} status={} durationMs={}",
-          request.getMethod(), request.getRequestURI(), response.getStatus(), elapsedMs);
+      if (loggable) {
+        long elapsedMs = (System.nanoTime() - startedAt) / 1_000_000;
+        log.info("Request completed: method={} path={} status={} durationMs={}",
+            request.getMethod(), path, response.getStatus(), elapsedMs);
+      }
     }
+  }
+
+  /** Browser-only assets (favicon, css, js, images) are not API traffic and add log noise. */
+  private static boolean isStaticResource(String path) {
+    return path.equals("/favicon.ico")
+        || path.matches(".*\\.(css|js|png|jpe?g|gif|svg|ico|woff2?|ttf|map)$");
   }
 }

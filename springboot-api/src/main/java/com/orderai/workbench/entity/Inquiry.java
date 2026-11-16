@@ -28,19 +28,8 @@ public class Inquiry {
   @Column(name = "created_at", nullable = false, updatable = false)
   public LocalDateTime createdAt;
 
-  /**
-   * Initializes this component with its required dependencies.
-   */
   protected Inquiry() {}
 
-  /**
-   * Initializes this component with its required dependencies.
-   * @param key input used by this operation
-   * @param email input used by this operation
-   * @param subject input used by this operation
-   * @param body input used by this operation
-   * @param category input used by this operation
-   */
   public Inquiry(String key, String email, String subject, String body, String category) {
     this.idempotencyKey = key;
     this.customerEmail = email;

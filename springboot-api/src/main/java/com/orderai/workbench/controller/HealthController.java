@@ -6,11 +6,8 @@ import org.springframework.web.bind.annotation.*;
 
 @RestController
 public class HealthController {
+  /** Returns the API health status. */
   @GetMapping("/api/health")
-  /**
-   * Returns the API health status.
-   * @return the result of this operation
-   */
   public ApiResponse<Map<String, String>> health() {
     return ApiResponse.success(Map.of("service", "order-ai-business-api"));
   }

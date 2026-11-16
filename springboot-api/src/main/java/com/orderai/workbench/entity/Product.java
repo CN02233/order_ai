@@ -17,8 +17,5 @@ public class Product {
   public Integer stock;
   public BigDecimal price;
 
-  /**
-   * Initializes this component with its required dependencies.
-   */
   public Product() {}
 }
