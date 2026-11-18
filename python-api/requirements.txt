@@ -4,3 +4,4 @@ pydantic[email]>=2.6,<3
 pytest>=8,<9
 httpx>=0.27,<1
 python-dotenv>=1.0,<2
+groq>=1,<2  # EN: Groq SDK for LLM analysis. 中文：LLM 分析使用的 Groq SDK。

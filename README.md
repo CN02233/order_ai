@@ -176,6 +176,52 @@ cd python-api
 .venv/bin/python -m pytest -q
 ```
 
+## Python inquiry analysis: LLM first, rules as fallback
+
+`POST /analyze-inquiry` now asks Groq to classify the inquiry first. A missing key,
+timeout, SDK error, invalid JSON, illegal category or out-of-range confidence is
+treated as an AI failure and transparently falls back to the unchanged keyword
+classifier in `app/domain/classifier.py`. The response always has the same shape:
+
+```json
+{
+  "category": "ORDER_QUERY",
+  "confidence": 0.95,
+  "needs_human_review": false,
+  "suggested_reply": "You can track your order using the tracking link.",
+  "analysis_source": "AI",
+  "error_message": null
+}
+```
+
+`analysis_source` is `AI` or `RULE_BASED`; on fallback `suggested_reply` is `null`
+and `error_message` holds a short, safe reason. Only `REFUND`, `COMPLAINT` and
+`OTHER` require human review — one shared rule covers both paths. `confidence`
+is the model's **self-assessment**, not a calibrated probability; the rule path
+uses 1.0 for a keyword match and 0.5 for `OTHER`.
+
+Configure in `python-api/.env` (copy from `.env.example`) or as real environment
+variables; the key is never read from code or written to logs:
+
+```env
+GROQ_API_KEY=
+GROQ_MODEL=llama-3.3-70b-versatile
+LLM_TIMEOUT_SECONDS=15
+```
+
+Without `GROQ_API_KEY` the service runs deterministically on rules, so no key is
+needed for local development or tests. Service logs record request id, AI
+outcome, source, category, duration and fallback reason; they never contain the
+customer email, inquiry text, API key or a raw model response. The Spring Boot
+DTO ignores the two additive JSON fields, so no Java or Vue change is required.
+
+All LLM tests mock the client and run without a real key:
+
+```sh
+cd python-api
+.venv/bin/python -m pytest -q
+```
+
 ## Main API endpoints
 
 Management APIs are paginated and filterable; all responses use the `{status, message, data, timestamp}` envelope.
