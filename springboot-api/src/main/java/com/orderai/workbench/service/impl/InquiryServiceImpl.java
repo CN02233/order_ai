@@ -12,7 +12,10 @@ import com.orderai.workbench.service.InquiryService;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,20 +37,36 @@ public class InquiryServiceImpl implements InquiryService {
   private final RestClient pythonClient;
   private final ObjectMapper objectMapper;
   private final String aiBaseUrl;
+  private final Duration connectTimeout;
+  private final Duration readTimeout;
 
   public InquiryServiceImpl(
       InquiryRepository r,
       ObjectMapper objectMapper,
       RestClient.Builder restClientBuilder,
-      @Value("${app.ai.base-url:http://127.0.0.1:8000}") String url) {
+      @Value("${app.ai.base-url:http://127.0.0.1:8000}") String url,
+      // EN: Timeouts are configurable; defaults keep Java waiting longer than Python's 15s LLM timeout.
+      // 中文：超时可配置；默认值保证 Java 等待时间长于 Python 的 15 秒 LLM 超时，避免 Java 先超时。
+      @Value("${app.ai.connect-timeout-seconds:3}") long connectTimeoutSeconds,
+      @Value("${app.ai.read-timeout-seconds:25}") long readTimeoutSeconds) {
     repo = r;
     this.objectMapper = objectMapper;
     this.aiBaseUrl = url.replaceAll("/+$", "");
+    this.connectTimeout = Duration.ofSeconds(connectTimeoutSeconds);
+    this.readTimeout = Duration.ofSeconds(readTimeoutSeconds);
     SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
-    requestFactory.setConnectTimeout(Duration.ofSeconds(3));
-    requestFactory.setReadTimeout(Duration.ofSeconds(10));
-    this.pythonClient =
-        restClientBuilder.clone().requestFactory(requestFactory).build();
+    requestFactory.setConnectTimeout(this.connectTimeout);
+    requestFactory.setReadTimeout(this.readTimeout);
+    this.pythonClient = restClientBuilder.clone().requestFactory(requestFactory).build();
+  }
+
+  /** EN: Test seam: expose timeouts so tests can assert the configured values. 中文：测试接缝：暴露超时配置，便于测试断言。 */
+  public Duration connectTimeout() {
+    return connectTimeout;
+  }
+
+  public Duration readTimeout() {
+    return readTimeout;
   }
 
   @Transactional
@@ -62,6 +81,8 @@ public class InquiryServiceImpl implements InquiryService {
     InquiryAnalysisRequest request =
         new InquiryAnalysisRequest(
             p.get("customer_email"), p.getOrDefault("subject", ""), p.get("body"));
+    // EN: Log only presence/length. Never log the email, subject or body values.
+    // 中文：只记录是否存在与长度，绝不记录邮箱、主题或正文内容。
     log.info("Calling inquiry analysis service: customerEmailPresent={} subjectLength={} bodyLength={}",
         request.customerEmail() != null,
         request.subject() == null ? 0 : request.subject().length(),
@@ -80,18 +101,19 @@ public class InquiryServiceImpl implements InquiryService {
   }
 
   private InquiryAnalysisResponse analyzeWithPython(InquiryAnalysisRequest payload) {
+    String requestId = UUID.randomUUID().toString();
     try {
       String json = objectMapper.writeValueAsString(payload);
-      String requestId = UUID.randomUUID().toString();
       String target = aiBaseUrl + "/analyze-inquiry";
+      // EN: Metadata only: no JSON body, so no customer email/subject/body can reach the log.
+      // 中文：只记录元数据：不记录 JSON 正文，客户邮箱/主题/正文不会进入日志。
       log.info(
-          "python_http_request requestId={} method={} url={} contentType={} bodyBytes={} jsonBody={}",
+          "python_http_request requestId={} method={} url={} contentType={} bodyBytes={}",
           requestId,
           "POST",
           target,
           "application/json",
-          json.getBytes(StandardCharsets.UTF_8).length,
-          json);
+          json.getBytes(StandardCharsets.UTF_8).length);
       return pythonClient.post()
           .uri(target)
           .contentType(MediaType.APPLICATION_JSON)
@@ -116,13 +138,34 @@ public class InquiryServiceImpl implements InquiryService {
                   safeErrorSummary(responseBody));
               throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Inquiry analysis service failed");
             }
-            return objectMapper.readValue(responseBody, InquiryAnalysisResponse.class);
+            InquiryAnalysisResponse result =
+                objectMapper.readValue(responseBody, InquiryAnalysisResponse.class);
+            // EN: Record source and fallback reason (from a fixed safe enum) so new fields are
+            // consumed, not silently dropped. Never log the raw response body.
+            // 中文：记录分析来源与降级原因（来自固定安全枚举），确保新增字段被消费而非丢弃；
+            // 绝不记录原始响应正文。
+            log.info(
+                "python_analysis_result requestId={} source={} category={} errorPresent={}",
+                requestId,
+                result.analysisSource() == null ? "UNKNOWN" : result.analysisSource(),
+                result.category(),
+                result.errorMessage() != null);
+            return result;
           });
     } catch (ResponseStatusException exception) {
       throw exception;
     } catch (IOException | RestClientException exception) {
-      log.error("Could not communicate with inquiry analysis service", exception);
-      throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Inquiry analysis service unavailable", exception);
+      // EN: Log only the exception type. The throwable may carry the request URI or a message
+      // echoing request data, so never pass it to the logger. The cause is still attached to the
+      // 502 for debugging, but ApiExceptionHandler logs only method/uri/status/reason.
+      // 中文：只记录异常类型。异常对象可能携带请求 URI 或回显请求数据的消息，绝不传给 logger。
+      // cause 仍挂在 502 上供调试，但 ApiExceptionHandler 只记录 method/uri/status/reason。
+      log.error(
+          "python_http_failed requestId={} errorType={}",
+          requestId,
+          exception.getClass().getSimpleName());
+      throw new ResponseStatusException(
+          HttpStatus.BAD_GATEWAY, "Inquiry analysis service unavailable", exception);
     }
   }
 
