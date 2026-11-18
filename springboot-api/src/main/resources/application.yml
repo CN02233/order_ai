@@ -15,7 +15,7 @@ app:
     # EN: Python LLM timeout is 15s; keep read longer so Java does not time out first.
     # 中文：Python LLM 超时为 15 秒；Java 读超时设更长，避免 Java 先超时。
     connect-timeout-seconds: 3
-    read-timeout-seconds: 25
+    read-timeout-seconds: 20
 
 logging:
   level:

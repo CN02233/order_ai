@@ -186,13 +186,13 @@ class InquiryAiIntegrationTest {
   }
 
   @Test
-  @DisplayName("Configured timeouts: connect 3s, read 25s by default")
+  @DisplayName("Configured timeouts: connect 3s, read 20s by default")
   void defaultTimeouts() {
     InquiryServiceImpl defaults =
-        new InquiryServiceImpl(repo, MAPPER, RestClient.builder(), "http://127.0.0.1:8000", 3, 25);
+        new InquiryServiceImpl(repo, MAPPER, RestClient.builder(), "http://127.0.0.1:8000", 3, 20);
 
     assertThat(defaults.connectTimeout()).isEqualTo(Duration.ofSeconds(3));
-    assertThat(defaults.readTimeout()).isEqualTo(Duration.ofSeconds(25));
+    assertThat(defaults.readTimeout()).isEqualTo(Duration.ofSeconds(20));
   }
 
   @Test

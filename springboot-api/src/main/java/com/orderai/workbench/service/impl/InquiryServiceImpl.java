@@ -48,7 +48,7 @@ public class InquiryServiceImpl implements InquiryService {
       // EN: Timeouts are configurable; defaults keep Java waiting longer than Python's 15s LLM timeout.
       // 中文：超时可配置；默认值保证 Java 等待时间长于 Python 的 15 秒 LLM 超时，避免 Java 先超时。
       @Value("${app.ai.connect-timeout-seconds:3}") long connectTimeoutSeconds,
-      @Value("${app.ai.read-timeout-seconds:25}") long readTimeoutSeconds) {
+      @Value("${app.ai.read-timeout-seconds:20}") long readTimeoutSeconds) {
     repo = r;
     this.objectMapper = objectMapper;
     this.aiBaseUrl = url.replaceAll("/+$", "");
