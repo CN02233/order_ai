@@ -101,7 +101,7 @@ POST /analyze-inquiry
 
 ### 4.2 `app/infrastructure/llm/config.py`
 
-模块常量：`DEFAULT_MODEL = "llama-3.3-70b-versatile"`、`DEFAULT_TIMEOUT_SECONDS = 15.0`。
+模块常量：`DEFAULT_MODEL = "openai/gpt-oss-120b"`、`DEFAULT_TIMEOUT_SECONDS = 15.0`。
 
 **`LlmConfig`（frozen dataclass）**
 
@@ -264,9 +264,15 @@ POST /analyze-inquiry
 ### 4.12 `app/main.py`
 
 - `load_dotenv()`：本地从 `python-api/.env` 载入环境变量；部署环境直接注入同名变量。
+- `REQUEST_ID_PATTERN`：合法请求 ID 的正则 `[A-Za-z0-9._-]{1,64}`。
+- **`resolve_request_id(raw: bytes | None) -> str`**：校验客户端 `X-Request-ID`。超过 64 字符、
+  含非字母数字/点/下划线/连字符、或为空时，生成新的 UUID。同一个最终 ID 用于日志、
+  `ContextVar` 和响应头。
 - **`HttpLoggingMiddleware`**
-  - `__call__(scope, receive, send)`：生成/读取 `X-Request-ID`，通过 `set_request_id` 传入服务层；
-    在 `finally` 中记录请求完成日志并 `reset_request_id`；响应头回写 `x-request-id`。
+  - `__call__(scope, receive, send)`：调用 `resolve_request_id` 得到最终 ID，通过 `set_request_id`
+    传入服务层；在 `finally` 中记录请求完成日志并 `reset_request_id`；响应头回写 `x-request-id`。
+  - 异常处理：使用 `logger.error` 仅记录 `request_id`、`method`、`path`、`error_type`，
+    **不记录异常消息和堆栈**，随后 `raise` 原样传播给 FastAPI。
   - `_json_field_names(body)`（staticmethod）：只记录 JSON **字段名**，不记录值。
   - `_response_summary(body)`（staticmethod）：只记录响应字段名/校验错误结构。
 
@@ -291,7 +297,7 @@ POST /analyze-inquiry
 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `GROQ_API_KEY` | 空 | 为空则全程走规则；只从环境变量读取，禁止入库 |
-| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Groq 模型名，按服务商现状调整 |
+| `GROQ_MODEL` | `openai/gpt-oss-120b` | Groq 模型名，可用环境变量覆盖；请检查本地 `.env` 是否仍配置旧模型 |
 | `LLM_TIMEOUT_SECONDS` | `15` | 单次请求超时（秒），非法值回退默认 |
 
 样例见 `.env.example`；`docker-compose.yml` 从宿主环境透传以上变量（空值即规则模式）。
@@ -331,16 +337,22 @@ Spring Boot 的 `InquiryAnalysisResponse` 是四字段 record，使用默认 `Ob
 | `service_with(outcome)` | 构造注入 Mock LLM 的服务 |
 | `_clear_dependency_overrides()` | autouse fixture，隔离各测试的 DI 覆盖 |
 
+`tests/test_config.py`：默认模型为 `openai/gpt-oss-120b`、`GROQ_MODEL` 覆盖默认值。
+
+`tests/test_middleware.py`：非法/为空/超长的 `X-Request-ID` 被替换为 UUID、合法 ID 保持不变、
+响应头与日志使用同一个 ID、异常日志只含类型不含消息与堆栈且异常继续传播。
+
 覆盖内容：LLM 成功（ORDER_QUERY / REFUND）、API 异常、超时、非法 JSON、非法分类、
 非法 confidence、字段缺失、OTHER/REFUND 人工审核、两条路径审核规则一致、降级来源、
-旧接口兼容、无真实 Key 可运行、日志脱敏、规则异常不外吞。
+旧接口兼容、无真实 Key 可运行、日志脱敏、规则异常不外吞、模型配置、请求 ID 校验、
+异常日志安全。
 
 ```sh
 cd python-api
 .venv/bin/python -m pytest -q
 ```
 
-结果：**27 passed**（原有 3 个 + 新增 24 个）。测试全部 Mock，不访问真实 Groq API。
+结果：**39 passed**。测试全部 Mock，不访问真实 Groq API。
 
 ---
 
@@ -369,3 +381,16 @@ cd python-api
 | `python-api/tests/test_llm_analysis.py` | 新增 | 全 Mock 测试 |
 
 `python-api/app/domain/classifier.py` 规则未改动。所有新增/修改的注释均为中英双语。
+
+### Task 01.1 增量变更
+
+| 文件 | 说明 |
+| --- | --- |
+| `app/infrastructure/llm/config.py` | 默认模型改为 `openai/gpt-oss-120b`（保留 `GROQ_MODEL` 覆盖） |
+| `app/main.py` | `resolve_request_id` 校验 `X-Request-ID`；异常日志只记类型不记消息/堆栈 |
+| `.env.example` / `docker-compose.yml` / `README.md` | 模型默认值同步更新 |
+| `tests/test_config.py` | 新增：默认模型与环境变量覆盖 |
+| `tests/test_middleware.py` | 新增：请求 ID 校验与异常日志安全 |
+
+注意：本地 `python-api/.env` 若仍固定 `llama-3.3-70b-versatile`，需手动改为
+`openai/gpt-oss-120b`（或在环境中设置 `GROQ_MODEL`）；真实 API Key 只保留在本地，未写入代码或提交。

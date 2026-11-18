@@ -205,9 +205,13 @@ variables; the key is never read from code or written to logs:
 
 ```env
 GROQ_API_KEY=
-GROQ_MODEL=llama-3.3-70b-versatile
+GROQ_MODEL=openai/gpt-oss-120b
 LLM_TIMEOUT_SECONDS=15
 ```
+
+EN: If you already have a local `python-api/.env`, check whether it still pins the old
+`llama-3.3-70b-versatile` model and update it to `openai/gpt-oss-120b`.
+中文：如果本地 `python-api/.env` 中仍固定使用旧模型 `llama-3.3-70b-versatile`，请改为 `openai/gpt-oss-120b`。
 
 Without `GROQ_API_KEY` the service runs deterministically on rules, so no key is
 needed for local development or tests. Service logs record request id, AI

@@ -7,7 +7,7 @@ source control, logged, or included in an error message.
 import os
 from dataclasses import dataclass
 
-DEFAULT_MODEL = "llama-3.3-70b-versatile"
+DEFAULT_MODEL = "openai/gpt-oss-120b"
 DEFAULT_TIMEOUT_SECONDS = 15.0
 
 

@@ -1,6 +1,7 @@
 """Application entry point for the Python inquiry analysis service."""
 import logging
 import json
+import re
 import time
 import uuid
 
@@ -26,6 +27,25 @@ logger = logging.getLogger("order_ai")
 app = FastAPI(title="Order AI Inquiry Analysis Service", version="0.2.0")
 app.include_router(router)
 
+# EN: A client request id may be at most 64 chars of [A-Za-z0-9._-].
+# 中文：客户端请求 ID 最长 64 字符，且只能包含字母、数字、点、下划线和连字符。
+REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,64}")
+
+
+def resolve_request_id(raw: bytes | None) -> str:
+    """EN: Validate the incoming X-Request-ID, else generate a UUID.
+
+    中文：校验传入的 X-Request-ID；非法或为空时生成新的 UUID。
+    """
+    if raw:
+        try:
+            candidate = raw.decode("ascii")
+        except UnicodeDecodeError:
+            candidate = ""
+        if REQUEST_ID_PATTERN.fullmatch(candidate):
+            return candidate
+    return str(uuid.uuid4())
+
 
 class HttpLoggingMiddleware:
     """EN: Log HTTP metadata and JSON field names only, never customer values.
@@ -42,9 +62,9 @@ class HttpLoggingMiddleware:
             return
 
         headers = {key.lower(): value for key, value in scope.get("headers", [])}
-        request_id = headers.get(b"x-request-id", str(uuid.uuid4()).encode()).decode(
-            "utf-8", errors="replace"
-        )
+        # EN: One validated id is reused for logs, context and the response header.
+        # 中文：同一个校验后的 ID 同时用于日志、上下文和响应头。
+        request_id = resolve_request_id(headers.get(b"x-request-id"))
         # EN: Propagate the middleware request id into service log lines.
         # 中文：把中间件的请求 ID 传递到服务层日志中。
         request_id_token = set_request_id(request_id)
@@ -86,12 +106,16 @@ class HttpLoggingMiddleware:
 
         try:
             await self.application(scope, logged_receive, logged_send)
-        except Exception:
-            logger.exception(
-                "http_request_failed request_id=%s method=%s path=%s",
+        except Exception as error:
+            # EN: Log only the type: no message, no traceback. Then re-raise so
+            # FastAPI still handles the error as before.
+            # 中文：只记录异常类型，不记录消息或堆栈；随后原样抛出，保持 FastAPI 原有错误处理。
+            logger.error(
+                "http_request_failed request_id=%s method=%s path=%s error_type=%s",
                 request_id,
                 method,
                 path,
+                type(error).__name__,
             )
             raise
         finally:
