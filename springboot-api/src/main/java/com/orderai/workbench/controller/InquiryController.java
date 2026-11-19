@@ -115,7 +115,16 @@ public class InquiryController {
   }
 
   private static InquiryManagementResponse toView(Inquiry inquiry) {
-    return new InquiryManagementResponse(inquiry.id, inquiry.customerEmail, inquiry.subject,
-        inquiry.body, inquiry.category, inquiry.createdAt);
+    return new InquiryManagementResponse(
+        inquiry.id,
+        inquiry.customerEmail,
+        inquiry.subject,
+        inquiry.body,
+        inquiry.category,
+        inquiry.confidence,
+        inquiry.needsHumanReview,
+        inquiry.suggestedReply,
+        inquiry.analysisSource,
+        inquiry.createdAt);
   }
 }

@@ -1,5 +1,5 @@
 -- Full schema for a brand-new database.
--- Existing databases get the same state by applying V2 -> V3 -> V4 -> V5 from db/migration/.
+-- Existing databases get the same state by applying V2 -> V3 -> V4 -> V5 -> V6 from db/migration/.
 CREATE TABLE IF NOT EXISTS customers(
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   email VARCHAR(255) UNIQUE NOT NULL,
@@ -94,6 +94,11 @@ CREATE TABLE IF NOT EXISTS inquiries(
   subject VARCHAR(500),
   body TEXT,
   category VARCHAR(40),
+  -- Complete AI analysis result; nullable so rows created before V6 stay readable.
+  confidence DECIMAL(5,4) NULL,
+  needs_human_review BOOLEAN NULL,
+  suggested_reply TEXT NULL,
+  analysis_source VARCHAR(20) NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
