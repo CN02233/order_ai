@@ -69,7 +69,23 @@ public class InquiryController {
     return ApiResponse.success(inquiries.findAll(spec, pageable).map(InquiryController::toView));
   }
 
-  /** Partial update: a field is only written when the payload carries it. */
+  /**
+   * EN: Full detail view of one inquiry, including the immutable AI analysis snapshot.
+   * 中文：单条咨询的完整详情，包含不可人工修改的 AI 分析快照。
+   */
+  @GetMapping("/{id}")
+  public ApiResponse<InquiryManagementResponse> detail(@PathVariable long id) {
+    Inquiry inquiry = inquiries.findById(id)
+        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Inquiry not found"));
+    return ApiResponse.success(toView(inquiry));
+  }
+
+  /**
+   * EN: Partial update of business fields only. The request DTO deliberately has no AI analysis
+   *     fields, so ai_category and the analysis snapshot can never be changed here.
+   * 中文：只做业务字段的部分更新。请求 DTO 刻意不含 AI 分析字段，因此此处永远无法修改
+   *     ai_category 与分析快照。
+   */
   @PutMapping("/{id}")
   public ApiResponse<InquiryManagementResponse> update(@PathVariable long id,
       @RequestBody InquiryUpdateRequest input) {
@@ -121,6 +137,7 @@ public class InquiryController {
         inquiry.subject,
         inquiry.body,
         inquiry.category,
+        inquiry.aiCategory,
         inquiry.confidence,
         inquiry.needsHumanReview,
         inquiry.suggestedReply,

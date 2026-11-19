@@ -16,6 +16,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.orderai.workbench.api.ApiResponse;
 import com.orderai.workbench.controller.InquiryController;
+import com.orderai.workbench.dto.request.InquiryUpdateRequest;
 import com.orderai.workbench.dto.response.InquiryAnalysisResponse;
 import com.orderai.workbench.dto.response.InquiryManagementResponse;
 import com.orderai.workbench.dto.response.InquiryResponse;
@@ -119,6 +120,9 @@ class InquiryAiIntegrationTest {
 
     assertThat(result.inquiryId()).isEqualTo(1L);
     assertThat(result.category()).isEqualTo("ORDER_QUERY");
+    // EN: A new inquiry starts with ai_category = category.
+    // 中文：新咨询创建时 ai_category 与 category 相同。
+    assertThat(result.aiCategory()).isEqualTo("ORDER_QUERY");
     assertThat(result.confidence()).isEqualTo(0.95);
     assertThat(result.needsHumanReview()).isFalse();
     assertThat(result.suggestedReply()).isEqualTo("Track your order.");
@@ -133,6 +137,7 @@ class InquiryAiIntegrationTest {
     verify(repo).saveAndFlush(captor.capture());
     Inquiry saved = captor.getValue();
     assertThat(saved.category).isEqualTo("ORDER_QUERY");
+    assertThat(saved.aiCategory).isEqualTo("ORDER_QUERY");
     assertThat(saved.confidence).isEqualTo(0.95);
     assertThat(saved.needsHumanReview).isFalse();
     assertThat(saved.suggestedReply).isEqualTo("Track your order.");
@@ -150,6 +155,7 @@ class InquiryAiIntegrationTest {
     InquiryResponse result = service.create(payload(), "key-rule-based");
 
     assertThat(result.category()).isEqualTo("OTHER");
+    assertThat(result.aiCategory()).isEqualTo("OTHER");
     assertThat(result.confidence()).isEqualTo(0.5);
     assertThat(result.needsHumanReview()).isTrue();
     assertThat(result.suggestedReply()).isNull();
@@ -174,13 +180,17 @@ class InquiryAiIntegrationTest {
     Inquiry stored =
         new Inquiry(
             "key-replay", EMAIL, SUBJECT, BODY, "COMPLAINT", 0.8, true, "We will follow up", "AI");
+    // EN: A human already changed the business category; the AI snapshot stays COMPLAINT.
+    // 中文：人工已将业务分类改为 ORDER_QUERY，AI 快照仍为 COMPLAINT。
+    stored.category = "ORDER_QUERY";
     stored.id = 42L;
     when(repo.findByIdempotencyKey("key-replay")).thenReturn(Optional.of(stored));
 
     InquiryResponse result = service.create(payload(), "key-replay");
 
     assertThat(result.inquiryId()).isEqualTo(42L);
-    assertThat(result.category()).isEqualTo("COMPLAINT");
+    assertThat(result.category()).isEqualTo("ORDER_QUERY");
+    assertThat(result.aiCategory()).isEqualTo("COMPLAINT");
     assertThat(result.confidence()).isEqualTo(0.8);
     assertThat(result.needsHumanReview()).isTrue();
     assertThat(result.suggestedReply()).isEqualTo("We will follow up");
@@ -208,15 +218,69 @@ class InquiryAiIntegrationTest {
     InquiryManagementResponse view = response.data().getContent().get(0);
 
     assertThat(view.id()).isEqualTo(7L);
+    assertThat(view.aiCategory()).isEqualTo("REFUND");
     assertThat(view.confidence()).isEqualTo(0.75);
     assertThat(view.needsHumanReview()).isTrue();
     assertThat(view.suggestedReply()).isEqualTo("Refund reply");
     assertThat(view.analysisSource()).isEqualTo("AI");
     JsonNode json = MAPPER.valueToTree(view);
+    assertThat(json.has("ai_category")).isTrue();
     assertThat(json.has("needs_human_review")).isTrue();
     assertThat(json.has("suggested_reply")).isTrue();
     assertThat(json.has("analysis_source")).isTrue();
     assertThat(json.has("error_message")).isFalse();
+  }
+
+  @Test
+  @DisplayName("Detail endpoint returns the full AI snapshot of one inquiry")
+  void detailIncludesAnalysisFields() {
+    Inquiry row =
+        new Inquiry("key-detail", EMAIL, SUBJECT, BODY, "PRODUCT_INQUIRY", "PRODUCT_INQUIRY",
+            0.92, false, "Here are the specs.", "AI");
+    row.id = 8L;
+    InquiryRepository detailRepo = mock(InquiryRepository.class);
+    when(detailRepo.findById(8L)).thenReturn(Optional.of(row));
+    InquiryController controller = new InquiryController(mock(InquiryService.class), detailRepo);
+
+    InquiryManagementResponse view = controller.detail(8L).data();
+
+    assertThat(view.category()).isEqualTo("PRODUCT_INQUIRY");
+    assertThat(view.aiCategory()).isEqualTo("PRODUCT_INQUIRY");
+    assertThat(view.confidence()).isEqualTo(0.92);
+    assertThat(view.needsHumanReview()).isFalse();
+    assertThat(view.suggestedReply()).isEqualTo("Here are the specs.");
+    assertThat(view.analysisSource()).isEqualTo("AI");
+    assertThat(MAPPER.valueToTree(view).has("error_message")).isFalse();
+  }
+
+  @Test
+  @DisplayName("Manual category edit changes only category, never the AI snapshot")
+  void manualEditPreservesAiSnapshot() throws Exception {
+    Inquiry stored =
+        new Inquiry("key-edit", EMAIL, SUBJECT, BODY, "REFUND", "REFUND", 0.88, true,
+            "Refund reply", "AI");
+    stored.id = 9L;
+    InquiryRepository editRepo = mock(InquiryRepository.class);
+    when(editRepo.findById(9L)).thenReturn(Optional.of(stored));
+    when(editRepo.save(any(Inquiry.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    InquiryController controller = new InquiryController(mock(InquiryService.class), editRepo);
+
+    // EN: Even if a client sends AI fields, the request DTO has nowhere to store them.
+    // 中文：即便客户端夹带 AI 字段，请求 DTO 也没有地方保存它们。
+    InquiryUpdateRequest request = MAPPER.readValue(
+        "{\"category\":\"COMPLAINT\",\"ai_category\":\"ORDER_QUERY\",\"confidence\":0.01,"
+            + "\"needs_human_review\":false,\"suggested_reply\":\"forged\",\"analysis_source\":\"RULE_BASED\"}",
+        InquiryUpdateRequest.class);
+    InquiryManagementResponse view = controller.update(9L, request).data();
+
+    assertThat(stored.category).isEqualTo("COMPLAINT");
+    assertThat(stored.aiCategory).isEqualTo("REFUND");
+    assertThat(stored.confidence).isEqualTo(0.88);
+    assertThat(stored.needsHumanReview).isTrue();
+    assertThat(stored.suggestedReply).isEqualTo("Refund reply");
+    assertThat(stored.analysisSource).isEqualTo("AI");
+    assertThat(view.aiCategory()).isEqualTo("REFUND");
+    assertThat(view.confidence()).isEqualTo(0.88);
   }
 
   @Test
@@ -339,6 +403,7 @@ class InquiryAiIntegrationTest {
 
     assertThat(view.id()).isEqualTo(9L);
     assertThat(view.category()).isEqualTo("OTHER");
+    assertThat(view.aiCategory()).isNull();
     assertThat(view.confidence()).isNull();
     assertThat(view.needsHumanReview()).isNull();
     assertThat(view.suggestedReply()).isNull();
@@ -395,6 +460,13 @@ class InquiryAiIntegrationTest {
     }
     assertThat(schema).contains("NULL");
     assertThat(migration).contains("ALTER TABLE inquiries", "NULL");
+
+    // EN: V7 adds ai_category without backfilling historical rows from `category`.
+    // 中文：V7 增加 ai_category，且不用 `category` 回填历史记录。
+    String v7 = resource("/db/migration/V7__distinguish_ai_category.sql");
+    assertThat(schema).contains("ai_category VARCHAR(40) NULL");
+    assertThat(v7).contains("ALTER TABLE inquiries", "ai_category VARCHAR(40) NULL");
+    assertThat(v7).doesNotContain("UPDATE inquiries");
   }
 
   // ---------- helpers ----------

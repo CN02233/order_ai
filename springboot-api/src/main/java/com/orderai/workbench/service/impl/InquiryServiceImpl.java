@@ -90,6 +90,7 @@ public class InquiryServiceImpl implements InquiryService {
       return new InquiryResponse(
           existing.id,
           existing.category,
+          existing.aiCategory,
           existing.confidence,
           existing.needsHumanReview,
           existing.suggestedReply,
@@ -129,6 +130,7 @@ public class InquiryServiceImpl implements InquiryService {
     return new InquiryResponse(
         saved.id,
         saved.category,
+        saved.aiCategory,
         saved.confidence,
         saved.needsHumanReview,
         saved.suggestedReply,

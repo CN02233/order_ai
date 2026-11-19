@@ -15,6 +15,7 @@ public record InquiryManagementResponse(
     String subject,
     String body,
     String category,
+    @JsonProperty("ai_category") String aiCategory,
     Double confidence,
     @JsonProperty("needs_human_review") Boolean needsHumanReview,
     @JsonProperty("suggested_reply") String suggestedReply,

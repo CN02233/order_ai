@@ -24,6 +24,13 @@ public class Inquiry {
 
   public String category;
 
+  // EN: The category Python originally returned. Manual edits only change `category`, so this
+  //     snapshot always preserves the AI's original judgement. Null for pre-V7 records.
+  // 中文：Python 最初返回的分类。人工修改只改 `category`，此快照始终保留 AI 原始判断；
+  //     V7 之前的历史记录为 null。
+  @Column(name = "ai_category", length = 40)
+  public String aiCategory;
+
   // EN: Complete analysis result from Python. All four columns are nullable so historical
   //     inquiries remain readable; new inquiries always receive validated values.
   // 中文：Python 返回的完整分析结果。四列均可空，保证历史咨询记录仍可读；
@@ -49,7 +56,7 @@ public class Inquiry {
   protected Inquiry() {}
 
   public Inquiry(String key, String email, String subject, String body, String category) {
-    this(key, email, subject, body, category, null, null, null, null);
+    this(key, email, subject, body, category, null, null, null, null, null);
   }
 
   public Inquiry(
@@ -62,11 +69,27 @@ public class Inquiry {
       Boolean needsHumanReview,
       String suggestedReply,
       String analysisSource) {
+    this(key, email, subject, body, category, category, confidence, needsHumanReview,
+        suggestedReply, analysisSource);
+  }
+
+  public Inquiry(
+      String key,
+      String email,
+      String subject,
+      String body,
+      String category,
+      String aiCategory,
+      Double confidence,
+      Boolean needsHumanReview,
+      String suggestedReply,
+      String analysisSource) {
     this.idempotencyKey = key;
     this.customerEmail = email;
     this.subject = subject;
     this.body = body;
     this.category = category;
+    this.aiCategory = aiCategory;
     this.confidence = confidence;
     this.needsHumanReview = needsHumanReview;
     this.suggestedReply = suggestedReply;
