@@ -67,10 +67,13 @@ import org.springframework.web.server.ResponseStatusException;
  * EN: Integration tests for the Spring Boot -> Python boundary using an in-JVM HTTP stub. No real
  * Python service or network is required; every scenario is controlled locally. A stateful in-memory
  * repository mock simulates the UNIQUE constraint on idempotency_key so idempotency and concurrency
- * are exercised against DB-like atomicity, not a single-threaded illusion.
+ * are exercised against DB-like atomicity, not a single-threaded illusion. A latch gate forces both
+ * concurrent requests to observe a missing row before either INSERT, making the conflict branch
+ * deterministic. This is NOT a real database integration test: the unique index is only simulated.
  *
- * <p>中文：使用 JVM 内 HTTP 桩服务测试 Spring Boot -> Python 边界。不需要真实 Python 服务或外网；每个场景都在本地精确控制。 有状态内存
- * repository mock 模拟 idempotency_key 的唯一约束，使幂等与并发测试基于类数据库的原子性，而非单线程假象。
+ * <p>中文：使用 JVM 内 HTTP 桩服务测试 Spring Boot -> Python 边界。不需要真实 Python 服务或外网；每个场景都在本地精确控制。
+ * 有状态内存 repository mock 模拟 idempotency_key 的唯一约束，使幂等与并发测试基于类数据库的原子性，而非单线程假象。
+ * 闸门保证两个并发请求都先查到“不存在”才放行插入，使冲突分支确定发生。这不是真实数据库集成测试：唯一索引只是被模拟。
  */
 class InquiryAiIntegrationTest {
   private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -95,6 +98,14 @@ class InquiryAiIntegrationTest {
   private AtomicInteger saveCalls;
   private int failSaveOnCall; // EN: 0 = no injected failure. 中文：0 表示不注入失败。
 
+  // EN: Test-only concurrency controls. When bothMissesGate is set, every "not found" lookup must
+  //     arrive before any INSERT is allowed, so the unique-key conflict branch is guaranteed.
+  // 中文：仅测试使用的并发控制。设置 bothMissesGate 后，所有“未找到”查询都到达后才允许 INSERT，
+  //     从而确保唯一键冲突分支必然执行。
+  private volatile CountDownLatch bothMissesGate;
+  private AtomicInteger findMissCount;
+  private AtomicInteger duplicateConflictCount;
+
   @BeforeEach
   void startStub() throws IOException {
     handler = new StubHandler();
@@ -117,9 +128,31 @@ class InquiryAiIntegrationTest {
     ids = new AtomicLong();
     saveCalls = new AtomicInteger();
     failSaveOnCall = 0;
+    bothMissesGate = null;
+    findMissCount = new AtomicInteger();
+    duplicateConflictCount = new AtomicInteger();
     repo = mock(InquiryRepository.class);
     when(repo.findByIdempotencyKey(anyString()))
-        .thenAnswer(invocation -> Optional.ofNullable(store.get(invocation.getArgument(0))));
+        .thenAnswer(
+            invocation -> {
+              String key = invocation.getArgument(0);
+              Inquiry found = store.get(key);
+              if (found == null) {
+                findMissCount.incrementAndGet();
+                CountDownLatch gate = bothMissesGate;
+                if (gate != null) {
+                  // EN: Each miss counts down, then waits until BOTH requests have missed.
+                  // 中文：每次未找到都先递减计数，再等待，直到两个请求都完成“未找到”查询。
+                  gate.countDown();
+                  try {
+                    gate.await(5, TimeUnit.SECONDS);
+                  } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                  }
+                }
+              }
+              return Optional.ofNullable(found);
+            });
     when(repo.saveAndFlush(any(Inquiry.class)))
         .thenAnswer(
             invocation -> {
@@ -135,6 +168,9 @@ class InquiryAiIntegrationTest {
               synchronized (store) {
                 if (src.id == null) {
                   if (store.containsKey(src.idempotencyKey)) {
+                    // EN: Counted so tests can prove the unique-key conflict branch ran.
+                    // 中文：计数用于证明测试确实执行了唯一键冲突分支。
+                    duplicateConflictCount.incrementAndGet();
                     throw new DataIntegrityViolationException("duplicate key");
                   }
                   returned.id = ids.incrementAndGet();
@@ -474,6 +510,19 @@ class InquiryAiIntegrationTest {
       server.stop(0);
       service.create(payload(), "key-log-fail");
 
+      // Content-mismatch path: fixed 409 reason, never the reused customer data.
+      try {
+        service.create(
+            Map.of(
+                "customer_email", "PRIVATE_OTHER@example.com",
+                "subject", SUBJECT,
+                "body", BODY),
+            "key-log-success");
+      } catch (ResponseStatusException ignored) {
+        // EN: expected 409; the assertion below checks that no customer data was logged.
+        // 中文：预期 409；下面的断言检查日志中没有客户信息。
+      }
+
       String all =
           String.join("\n", appender.list.stream().map(e -> e.getFormattedMessage()).toList());
       assertThat(all).doesNotContain(EMAIL, SUBJECT, BODY);
@@ -596,22 +645,104 @@ class InquiryAiIntegrationTest {
   }
 
   @Test
-  @DisplayName("Same key submitted twice with different content returns the original record")
-  void sameKeyDifferentContentReturnsOriginal() {
+  @DisplayName("Same key + same content replays; same key + different content -> 409 Conflict")
+  void sameKeyContentValidation() {
     handler.response = response(200, AI_JSON);
     InquiryResponse first = service.create(payload(), "key-same");
+
+    InquiryResponse replay = service.create(payload(), "key-same");
+    assertThat(replay.inquiryId()).isEqualTo(first.inquiryId());
+    assertThat(replay.replayed()).isTrue();
+    assertThat(replay.analysisStatus()).isEqualTo("SUCCESS");
 
     Map<String, String> different =
         Map.of(
             "customer_email", "another@example.com", "subject", "changed", "body", "changed body");
-    InquiryResponse second = service.create(different, "key-same");
+    assertThatThrownBy(() -> service.create(different, "key-same"))
+        .isInstanceOf(ResponseStatusException.class)
+        .satisfies(
+            e ->
+                assertThat(((ResponseStatusException) e).getStatusCode())
+                    .isEqualTo(HttpStatus.CONFLICT));
 
-    assertThat(second.inquiryId()).isEqualTo(first.inquiryId());
-    assertThat(second.category()).isEqualTo("ORDER_QUERY");
-    assertThat(second.replayed()).isTrue();
-    assertThat(second.analysisStatus()).isEqualTo("SUCCESS");
+    // EN: Nothing is overwritten: the original content stays stored, no second row, no second AI call.
+    // 中文：没有任何覆盖：原始内容保持不变，没有第二条记录，也没有第二次 AI 调用。
+    Inquiry stored = store.get("key-same");
+    assertThat(stored.customerEmail).isEqualTo(EMAIL);
+    assertThat(stored.subject).isEqualTo(SUBJECT);
+    assertThat(stored.body).isEqualTo(BODY);
     assertThat(store).hasSize(1);
-    assertThat(handler.callCount.get()).isEqualTo(1); // EN: no second Python call. 中文：未二次调用 Python。
+    assertThat(handler.callCount.get()).isEqualTo(1);
+  }
+
+  @Test
+  @DisplayName("Fingerprint has unambiguous field boundaries: moving text between fields conflicts")
+  void fingerprintHasUnambiguousBoundaries() {
+    handler.response = response(200, AI_JSON);
+    // EN: Naive concatenation would produce the same "abc"+"d" for both requests.
+    // 中文：简单字符串拼接会让两个请求都得到 "abc"+"d"，长度前缀编码则不会。
+    service.create(Map.of("customer_email", "a", "subject", "bc", "body", "d"), "key-boundary");
+
+    assertThatThrownBy(
+            () ->
+                service.create(
+                    Map.of("customer_email", "ab", "subject", "c", "body", "d"), "key-boundary"))
+        .isInstanceOf(ResponseStatusException.class)
+        .satisfies(
+            e ->
+                assertThat(((ResponseStatusException) e).getStatusCode())
+                    .isEqualTo(HttpStatus.CONFLICT));
+    assertThat(store).hasSize(1);
+    assertThat(handler.callCount.get()).isEqualTo(1);
+  }
+
+  @Test
+  @DisplayName("Null subject and empty subject are distinct contents under the same key")
+  void nullAndEmptySubjectAreDistinct() {
+    handler.response = response(200, AI_JSON);
+    Map<String, String> nullSubject = new java.util.HashMap<>();
+    nullSubject.put("customer_email", EMAIL);
+    // EN: key present with null -> stored as null. 中文：键存在但值为 null。
+    nullSubject.put("subject", null);
+    nullSubject.put("body", BODY);
+    service.create(nullSubject, "key-null-subject");
+
+    Map<String, String> emptySubject = new java.util.HashMap<>(nullSubject);
+    emptySubject.put("subject", "");
+    assertThatThrownBy(() -> service.create(emptySubject, "key-null-subject"))
+        .isInstanceOf(ResponseStatusException.class)
+        .satisfies(
+            e ->
+                assertThat(((ResponseStatusException) e).getStatusCode())
+                    .isEqualTo(HttpStatus.CONFLICT));
+    assertThat(store).hasSize(1);
+    assertThat(handler.callCount.get()).isEqualTo(1);
+  }
+
+  @Test
+  @DisplayName("Legacy stored inquiry (no digest column) is validated from its persisted fields")
+  void legacyRowIsValidatedFromPersistedFields() {
+    Inquiry legacy =
+        new Inquiry(
+            "key-legacy-replay",
+            EMAIL,
+            SUBJECT,
+            BODY,
+            "OTHER",
+            0.6,
+            true,
+            "reply",
+            "RULE_BASED");
+    legacy.id = 77L;
+    store.put(legacy.idempotencyKey, legacy);
+
+    InquiryResponse replay = service.create(payload(), "key-legacy-replay");
+
+    assertThat(replay.inquiryId()).isEqualTo(77L);
+    assertThat(replay.replayed()).isTrue();
+    assertThat(replay.analysisStatus()).isEqualTo("SUCCESS");
+    assertThat(handler.callCount.get()).isZero();
+    assertThat(saveCalls.get()).isZero();
   }
 
   @Test
@@ -630,23 +761,26 @@ class InquiryAiIntegrationTest {
   }
 
   @Test
-  @DisplayName("Two concurrent requests with the same key create one inquiry and call Python once")
-  void concurrentSameKeyCreatesOnceAndCallsPythonOnce() throws Exception {
+  @DisplayName(
+      "Deterministic concurrency: both miss first, one INSERT wins, the other hits unique-key conflict")
+  void concurrentSameKeyForcesUniqueKeyConflict() throws Exception {
     handler.response = response(200, AI_JSON);
+    bothMissesGate = new CountDownLatch(2);
     int threads = 2;
     ExecutorService pool = Executors.newFixedThreadPool(threads);
     CountDownLatch start = new CountDownLatch(1);
     CountDownLatch done = new CountDownLatch(threads);
     List<InquiryResponse> results = new CopyOnWriteArrayList<>();
+    List<Throwable> errors = new CopyOnWriteArrayList<>();
 
     for (int i = 0; i < threads; i++) {
       pool.submit(
           () -> {
             try {
               start.await();
-              results.add(service.create(payload(), "key-concurrent"));
-            } catch (Exception ignored) {
-              // EN: recorded via results size below. 中文：通过 results 数量体现。
+              results.add(service.create(payload(), "key-gated-concurrent"));
+            } catch (Throwable t) {
+              errors.add(t);
             } finally {
               done.countDown();
             }
@@ -657,12 +791,98 @@ class InquiryAiIntegrationTest {
     pool.shutdownNow();
 
     assertThat(finished).isTrue();
+    assertThat(errors).isEmpty();
+    // EN: Both requests really observed "record not found" before any INSERT was allowed.
+    // 中文：两个请求确实都先观察到“记录不存在”，之后才允许插入。
+    assertThat(findMissCount.get()).isEqualTo(2);
+    // EN: The loser entered the DataIntegrityViolationException branch exactly once.
+    // 中文：失败方恰好一次进入了唯一键冲突（DataIntegrityViolationException）分支。
+    assertThat(duplicateConflictCount.get()).isEqualTo(1);
     assertThat(results).hasSize(2);
     assertThat(store).hasSize(1); // EN: no duplicate inquiry. 中文：无重复咨询。
     assertThat(handler.callCount.get()).isEqualTo(1); // EN: no duplicate AI call. 中文：无重复 AI 调用。
     assertThat(results.stream().filter(r -> !r.replayed()).count()).isEqualTo(1);
     assertThat(results.stream().filter(r -> r.replayed()).count()).isEqualTo(1);
-    assertThat(results.stream().anyMatch(r -> "SUCCESS".equals(r.analysisStatus()))).isTrue();
+    // EN: The replay may happen before the winner's analysis is written, so PENDING is acceptable.
+    // 中文：重放可能发生在获胜者写入分析结果之前，因此 PENDING 也是正常响应。
+    assertThat(results)
+        .allSatisfy(r -> assertThat(r.analysisStatus()).isIn("SUCCESS", "PENDING"));
+  }
+
+  @Test
+  @DisplayName(
+      "Deterministic concurrency with different payloads under one key: loser -> 409 Conflict")
+  void concurrentDifferentContentForcesConflict() throws Exception {
+    handler.response = response(200, AI_JSON);
+    bothMissesGate = new CountDownLatch(2);
+    int threads = 2;
+    ExecutorService pool = Executors.newFixedThreadPool(threads);
+    CountDownLatch start = new CountDownLatch(1);
+    CountDownLatch done = new CountDownLatch(threads);
+    Map<String, String> changed =
+        Map.of(
+            "customer_email", "another@example.com", "subject", SUBJECT, "body", BODY);
+    List<Map<String, String>> requests = List.of(payload(), changed);
+    List<InquiryResponse> results = new CopyOnWriteArrayList<>();
+    List<Throwable> errors = new CopyOnWriteArrayList<>();
+
+    for (Map<String, String> request : requests) {
+      pool.submit(
+          () -> {
+            try {
+              start.await();
+              results.add(service.create(request, "key-gated-different"));
+            } catch (Throwable t) {
+              errors.add(t);
+            } finally {
+              done.countDown();
+            }
+          });
+    }
+    start.countDown();
+    boolean finished = done.await(10, TimeUnit.SECONDS);
+    pool.shutdownNow();
+
+    assertThat(finished).isTrue();
+    assertThat(errors).hasSize(1);
+    assertThat(errors.get(0))
+        .isInstanceOf(ResponseStatusException.class)
+        .satisfies(
+            e ->
+                assertThat(((ResponseStatusException) e).getStatusCode())
+                    .isEqualTo(HttpStatus.CONFLICT));
+    assertThat(findMissCount.get()).isEqualTo(2);
+    assertThat(duplicateConflictCount.get()).isEqualTo(1);
+    assertThat(results).hasSize(1);
+    assertThat(store).hasSize(1);
+    assertThat(handler.callCount.get()).isEqualTo(1);
+  }
+
+  @Test
+  @DisplayName(
+      "Analysis failure replay: no retry, no duplicate row; PENDING/FAILED split is a T2 dependency")
+  void failedAnalysisReplayDoesNotRetry() {
+    handler.response = response(500, "{\"detail\":\"boom\"}");
+
+    InquiryResponse first = service.create(payload(), "key-failed-replay");
+    assertThat(first.analysisStatus()).isEqualTo("FAILED");
+    assertThat(first.analysisError()).isEqualTo("AI_HTTP_ERROR");
+    assertThat(first.category()).isNull();
+
+    InquiryResponse second = service.create(payload(), "key-failed-replay");
+
+    // EN: T1 has no analysis_status column: a replay of a FAILED row can only be reported as
+    //     PENDING. Explicit T2 dependency: persist analysis_status/analysis_error to distinguish
+    //     PENDING from FAILED and to allow a deliberate re-analysis after a transient failure.
+    // 中文：T1 没有 analysis_status 列：FAILED 记录重放时只能报告 PENDING。明确的 T2 依赖：
+    //     需要持久化 analysis_status/analysis_error，才能区分 PENDING 与 FAILED，并在瞬时故障后支持主动重分析。
+    assertThat(second.replayed()).isTrue();
+    assertThat(second.analysisStatus()).isEqualTo("PENDING");
+    assertThat(second.analysisError()).isNull();
+    assertThat(second.category()).isNull();
+    assertThat(handler.callCount.get()).isEqualTo(1); // EN: no second Python call. 中文：未二次调用 Python。
+    assertThat(store).hasSize(1); // EN: no duplicate creation. 中文：没有重复创建。
+    assertThat(savedSnapshots).hasSize(1); // EN: raw row only; no analysis write. 中文：只有原始记录。
   }
 
   @Test

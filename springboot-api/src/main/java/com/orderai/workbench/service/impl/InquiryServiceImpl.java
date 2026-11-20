@@ -9,12 +9,16 @@ import com.orderai.workbench.dto.response.InquiryResponse;
 import com.orderai.workbench.entity.Inquiry;
 import com.orderai.workbench.repository.InquiryRepository;
 import com.orderai.workbench.service.InquiryService;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -43,6 +47,10 @@ public class InquiryServiceImpl implements InquiryService {
       Set.of("ORDER_QUERY", "PRODUCT_INQUIRY", "REFUND", "COMPLAINT", "OTHER");
   private static final Set<String> ALLOWED_ANALYSIS_SOURCES = Set.of("AI", "RULE_BASED");
   private static final Set<String> REVIEW_CATEGORIES = Set.of("REFUND", "COMPLAINT", "OTHER");
+  // EN: Fixed reason only: never include customer email/subject/body in an exception or log.
+  // 中文：固定原因文本：异常与日志中绝不携带客户邮箱、主题或正文。
+  private static final String CONTENT_MISMATCH_REASON =
+      "Idempotency-Key reused with different request content";
 
   private final InquiryRepository repo;
   private final RestClient pythonClient;
@@ -85,14 +93,25 @@ public class InquiryServiceImpl implements InquiryService {
   }
 
   /**
-   * EN: Create an inquiry reliably. Order: validate -> persist raw inquiry -> call Python -> write
-   * analysis. There is deliberately NO @Transactional here: repository calls each commit in their
-   * own short transaction, so the remote HTTP call never holds a database transaction. The raw
-   * inquiry is committed before Python is contacted and is never rolled back on an AI failure.
-   * Idempotency relies on the UNIQUE constraint on inquiries.idempotency_key (DB-level, atomic).
-   * 中文：可靠地创建咨询。顺序：校验 -> 落库原始咨询 -> 调 Python -> 回填分析结果。此处刻意不加 @Transactional： 每次 repository
-   * 调用各自在短事务中提交，远程 HTTP 调用绝不持有数据库事务。原始咨询在调用 Python 之前就已提交， AI 失败时绝不回滚。幂等依赖
-   * inquiries.idempotency_key 的唯一约束（数据库级、原子）。
+   * EN: Create an inquiry reliably. Order: validate -> fingerprint -> persist raw inquiry -> call
+   * Python -> write analysis. There is deliberately NO @Transactional here: repository calls each
+   * commit in their own short transaction, so the remote HTTP call never holds a database
+   * transaction. The raw inquiry is committed before Python is contacted and is never rolled back
+   * on an AI failure. Idempotency relies on the UNIQUE constraint on inquiries.idempotency_key
+   * (DB-level, atomic). A reused key is replayed ONLY when the SHA-256 request fingerprint matches;
+   * a different body under the same key is a 409 Conflict.
+   *
+   * <p>The fingerprint is NOT stored in a new column: it is computed deterministically from the
+   * already persisted customer_email/subject/body, so T1 needs no V8 migration. Those values are
+   * never changed after creation (the update path only edits `category`).
+   *
+   * 中文：可靠地创建咨询。顺序：校验 -> 计算指纹 -> 落库原始咨询 -> 调 Python -> 回填分析结果。此处刻意不加 @Transactional：
+   * 每次 repository 调用各自在短事务中提交，远程 HTTP 调用绝不持有数据库事务。原始咨询在调用 Python 之前就已提交，
+   * AI 失败时绝不回滚。幂等依赖 inquiries.idempotency_key 的唯一约束（数据库级、原子）。只有当 SHA-256
+   * 请求指纹一致时才重放；同一 Key 携带不同内容是 409 Conflict。
+   *
+   * <p>指纹不新增数据库列：它由已落库的 customer_email/subject/body 确定性计算得出，因此 T1 无需 V8
+   * 迁移；这三个字段创建后不会被修改（更新接口只改 `category`）。
    */
   public InquiryResponse create(Map<String, String> p, String key) {
     // Step 1: parameter validation. The key defines idempotency scope and must be usable.
@@ -100,11 +119,19 @@ public class InquiryServiceImpl implements InquiryService {
       throw new ResponseStatusException(
           HttpStatus.BAD_REQUEST, "Idempotency-Key must not be blank");
     }
+    // EN: Resolve each field exactly once so the persisted row, the fingerprint and the Python
+    // payload can never disagree about null-vs-empty normalization.
+    // 中文：每个字段只解析一次，确保落库记录、指纹与 Python 请求对 null/空字符串的归一化完全一致。
+    String email = p.get("customer_email");
+    String subject = p.getOrDefault("subject", "");
+    String body = p.get("body");
+    String fingerprint = requestFingerprint(email, subject, body);
 
-    // Step 2: fast-path replay. An existing key never calls Python again.
+    // Step 2: fast-path replay. An existing key never calls Python again, but its content must match.
     Optional<Inquiry> old = repo.findByIdempotencyKey(key);
     if (old.isPresent()) {
       Inquiry existing = old.get();
+      verifySameRequest(existing, fingerprint);
       log.info("Inquiry idempotency replay: inquiryId={}", existing.id);
       return replayResponse(existing);
     }
@@ -112,32 +139,25 @@ public class InquiryServiceImpl implements InquiryService {
     // Step 3: persist the raw inquiry FIRST, with all AI fields left null. Own transaction.
     Inquiry original;
     try {
-      original =
-          repo.saveAndFlush(
-              new Inquiry(
-                  key,
-                  p.get("customer_email"),
-                  p.getOrDefault("subject", ""),
-                  p.get("body"),
-                  null));
+      original = repo.saveAndFlush(new Inquiry(key, email, subject, body, null));
     } catch (DataIntegrityViolationException duplicate) {
-      // EN: Concurrent request won the unique-key race. Replay the winner's row, never call Python.
-      // 中文：并发请求抢到了唯一键。重放获胜者的记录，绝不调用 Python。
-      log.info("Inquiry idempotency conflict on insert; replaying stored inquiry");
+      // EN: Concurrent request won the unique-key race. A replay is only safe when the winner's
+      // stored content matches this request; otherwise the key was reused for a different inquiry.
+      // 中文：并发请求抢到了唯一键。只有获胜者落库内容与当前请求一致时才可重放；否则这个 Key 被用于不同咨询。
+      log.info("Inquiry idempotency conflict on insert; verifying stored inquiry");
       Inquiry winner =
           repo.findByIdempotencyKey(key)
               .orElseThrow(
                   () ->
                       new ResponseStatusException(
                           HttpStatus.CONFLICT, "Concurrent inquiry creation"));
+      verifySameRequest(winner, fingerprint);
       return replayResponse(winner);
     }
     log.info("Inquiry original persisted: inquiryId={}", original.id);
 
     // Step 4: delegate analysis to Python. No database transaction is held across this HTTP call.
-    InquiryAnalysisRequest request =
-        new InquiryAnalysisRequest(
-            p.get("customer_email"), p.getOrDefault("subject", ""), p.get("body"));
+    InquiryAnalysisRequest request = new InquiryAnalysisRequest(email, subject, body);
     // EN: Log only presence/length. Never log the email, subject or body values.
     // 中文：只记录是否存在与长度，绝不记录邮箱、主题或正文内容。
     log.info(
@@ -181,6 +201,61 @@ public class InquiryServiceImpl implements InquiryService {
           original.id,
           dbFailure.getClass().getSimpleName());
       return failedResponse(original.id, "AI_PERSIST_FAILED");
+    }
+  }
+
+  /**
+   * EN: SHA-256 over a canonical, length-prefixed encoding of the three request fields. Each field
+   * is written as: UTF-8 field name, ':', byte length (or -1 for null), ':', raw UTF-8 bytes, '\n'.
+   * Length prefixes make boundaries unambiguous: ("a","bc","d") and ("ab","c","d") hash differently,
+   * unlike naive concatenation. null and "" are also distinct values.
+   * 中文：对三个请求字段的规范化长度前缀编码计算 SHA-256。每个字段写成：UTF-8 字段名、':'、字节长度（null 记为
+   * -1）、':'、原始 UTF-8 字节、'\n'。长度前缀消除字段边界歧义：("a","bc","d") 与 ("ab","c","d")
+   * 的摘要不同，简单字符串拼接则会碰撞；null 与 "" 同样可区分。
+   */
+  private static String requestFingerprint(String email, String subject, String body) {
+    ByteArrayOutputStream canonical = new ByteArrayOutputStream();
+    writeFingerprintField(canonical, "customer_email", email);
+    writeFingerprintField(canonical, "subject", subject);
+    writeFingerprintField(canonical, "body", body);
+    try {
+      byte[] digest = MessageDigest.getInstance("SHA-256").digest(canonical.toByteArray());
+      return HexFormat.of().formatHex(digest);
+    } catch (NoSuchAlgorithmException e) {
+      // EN: SHA-256 is mandatory in every Java runtime; this can only indicate a broken JVM.
+      // 中文：SHA-256 是所有 Java 运行时的必备算法；出现此异常只可能是 JVM 实现异常。
+      throw new IllegalStateException("SHA-256 unavailable", e);
+    }
+  }
+
+  private static void writeFingerprintField(
+      ByteArrayOutputStream out, String name, String value) {
+    byte[] nameBytes = name.getBytes(StandardCharsets.UTF_8);
+    byte[] valueBytes = value == null ? null : value.getBytes(StandardCharsets.UTF_8);
+    out.writeBytes(nameBytes);
+    out.write(':');
+    out.writeBytes(
+        (valueBytes == null ? "-1" : Integer.toString(valueBytes.length))
+            .getBytes(StandardCharsets.UTF_8));
+    out.write(':');
+    if (valueBytes != null) {
+      out.writeBytes(valueBytes);
+    }
+    out.write('\n');
+  }
+
+  /**
+   * EN: Reject a reused key whose stored request content differs. The stored row is the source of
+   * truth because email/subject/body are immutable after creation, so no extra fingerprint column
+   * is needed. Logs carry only the inquiry id and a fixed reason; no customer data is logged.
+   * 中文：拒绝 Key 相同但请求内容不同的情况。由于邮箱/主题/正文创建后不可变，已落库记录即为可信来源，
+   * 无需额外指纹列。日志只记录咨询 id 与固定原因，绝不记录客户信息。
+   */
+  private static void verifySameRequest(Inquiry existing, String fingerprint) {
+    String storedFingerprint =
+        requestFingerprint(existing.customerEmail, existing.subject, existing.body);
+    if (!fingerprint.equals(storedFingerprint)) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT, CONTENT_MISMATCH_REASON);
     }
   }
 
