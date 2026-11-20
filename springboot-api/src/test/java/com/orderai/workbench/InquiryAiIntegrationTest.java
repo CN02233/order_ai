@@ -35,6 +35,14 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -45,6 +53,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatchers;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
@@ -56,39 +65,107 @@ import org.springframework.web.server.ResponseStatusException;
 
 /**
  * EN: Integration tests for the Spring Boot -> Python boundary using an in-JVM HTTP stub. No real
- * Python service or network is required; every scenario is controlled locally.
+ * Python service or network is required; every scenario is controlled locally. A stateful in-memory
+ * repository mock simulates the UNIQUE constraint on idempotency_key so idempotency and concurrency
+ * are exercised against DB-like atomicity, not a single-threaded illusion.
  *
- * <p>中文：使用 JVM 内 HTTP 桩服务测试 Spring Boot -> Python 边界。 不需要真实 Python 服务或外网；每个场景都在本地精确控制。
+ * <p>中文：使用 JVM 内 HTTP 桩服务测试 Spring Boot -> Python 边界。不需要真实 Python 服务或外网；每个场景都在本地精确控制。 有状态内存
+ * repository mock 模拟 idempotency_key 的唯一约束，使幂等与并发测试基于类数据库的原子性，而非单线程假象。
  */
 class InquiryAiIntegrationTest {
   private static final ObjectMapper MAPPER = new ObjectMapper();
   private static final String EMAIL = "private.customer@example.com";
   private static final String BODY = "PRIVATE_BODY_MARKER order not shipped";
   private static final String SUBJECT = "PRIVATE_SUBJECT_MARKER";
+  private static final String AI_JSON =
+      "{\"category\":\"ORDER_QUERY\",\"confidence\":0.95,\"needs_human_review\":false,"
+          + "\"suggested_reply\":\"Track your order.\",\"analysis_source\":\"AI\","
+          + "\"error_message\":null}";
 
   private HttpServer server;
   private StubHandler handler;
   private InquiryRepository repo;
   private InquiryServiceImpl service;
 
+  // EN: Stateful fake store + write snapshots, so tests can assert the two-phase write order.
+  // 中文：有状态假存储 + 写入快照，便于测试断言两阶段写入顺序。
+  private Map<String, Inquiry> store;
+  private List<Inquiry> savedSnapshots;
+  private AtomicLong ids;
+  private AtomicInteger saveCalls;
+  private int failSaveOnCall; // EN: 0 = no injected failure. 中文：0 表示不注入失败。
+
   @BeforeEach
   void startStub() throws IOException {
     handler = new StubHandler();
     server = startServer(handler);
     String baseUrl = "http://127.0.0.1:" + server.getAddress().getPort();
+    setupStatefulRepo();
+    service = new InquiryServiceImpl(repo, MAPPER, RestClient.builder(), baseUrl, 3, 5);
+  }
 
-    // EN: Mock repository: no replay, assign an id on save.
-    // 中文：Mock repository：不返回幂等重放，保存时分配 id。
+  /**
+   * EN: A mock repository with DB-like semantics: find by key reads the store; saveAndFlush INSERTs
+   * (enforcing the unique key) when id is null and UPDATEs otherwise. Each save archives an
+   * immutable snapshot so tests can prove the raw inquiry was committed before any analysis was
+   * attached. 中文：具备类数据库语义的 mock repository：按 key 查询读存储；id 为空时 saveAndFlush 执行 INSERT（强制唯一键）， 否则执行
+   * UPDATE。每次保存归档一个不可变快照，从而证明原始咨询在分析字段写入之前就已提交。
+   */
+  private void setupStatefulRepo() {
+    store = new ConcurrentHashMap<>();
+    savedSnapshots = new CopyOnWriteArrayList<>();
+    ids = new AtomicLong();
+    saveCalls = new AtomicInteger();
+    failSaveOnCall = 0;
     repo = mock(InquiryRepository.class);
-    when(repo.findByIdempotencyKey(anyString())).thenReturn(Optional.empty());
+    when(repo.findByIdempotencyKey(anyString()))
+        .thenAnswer(invocation -> Optional.ofNullable(store.get(invocation.getArgument(0))));
     when(repo.saveAndFlush(any(Inquiry.class)))
         .thenAnswer(
             invocation -> {
-              Inquiry entity = invocation.getArgument(0);
-              entity.id = 1L;
-              return entity;
+              // EN: Fault injection: fail at the Nth saveAndFlush while earlier writes stay
+              // committed.
+              // 中文：故障注入：在第 N 次 saveAndFlush 失败，之前的写入保持已提交。
+              if (failSaveOnCall > 0 && saveCalls.incrementAndGet() == failSaveOnCall) {
+                throw new RuntimeException("simulated DB failure");
+              }
+              Inquiry src = invocation.getArgument(0);
+              Inquiry returned = copy(src);
+              Inquiry snapshot = copy(src);
+              synchronized (store) {
+                if (src.id == null) {
+                  if (store.containsKey(src.idempotencyKey)) {
+                    throw new DataIntegrityViolationException("duplicate key");
+                  }
+                  returned.id = ids.incrementAndGet();
+                  snapshot.id = returned.id;
+                  store.put(src.idempotencyKey, returned);
+                } else {
+                  returned.id = src.id;
+                  snapshot.id = src.id;
+                  store.put(src.idempotencyKey, returned);
+                }
+              }
+              savedSnapshots.add(snapshot);
+              return returned;
             });
-    service = new InquiryServiceImpl(repo, MAPPER, RestClient.builder(), baseUrl, 3, 5);
+  }
+
+  private static Inquiry copy(Inquiry s) {
+    Inquiry c =
+        new Inquiry(
+            s.idempotencyKey,
+            s.customerEmail,
+            s.subject,
+            s.body,
+            s.category,
+            s.aiCategory,
+            s.confidence,
+            s.needsHumanReview,
+            s.suggestedReply,
+            s.analysisSource);
+    c.id = s.id;
+    return c;
   }
 
   @AfterEach
@@ -112,12 +189,7 @@ class InquiryAiIntegrationTest {
   @Test
   @DisplayName("Python returns AI success result")
   void aiSuccess() {
-    handler.response =
-        response(
-            200,
-            "{\"category\":\"ORDER_QUERY\",\"confidence\":0.95,\"needs_human_review\":false,"
-                + "\"suggested_reply\":\"Track your order.\",\"analysis_source\":\"AI\","
-                + "\"error_message\":null}");
+    handler.response = response(200, AI_JSON);
 
     InquiryResponse result = service.create(payload(), "key-ai-success");
 
@@ -130,21 +202,29 @@ class InquiryAiIntegrationTest {
     assertThat(result.needsHumanReview()).isFalse();
     assertThat(result.suggestedReply()).isEqualTo("Track your order.");
     assertThat(result.analysisSource()).isEqualTo("AI");
+    assertThat(result.analysisStatus()).isEqualTo("SUCCESS");
+    assertThat(result.analysisError()).isNull();
     assertThat(result.replayed()).isFalse();
     assertThat(handler.method.get()).isEqualTo("POST");
     assertThat(handler.requestId.get()).isNotBlank();
 
-    // EN: Every analysis field must reach the database together with the inquiry.
-    // 中文：所有分析字段必须与咨询记录一起写入数据库。
-    ArgumentCaptor<Inquiry> captor = ArgumentCaptor.forClass(Inquiry.class);
-    verify(repo).saveAndFlush(captor.capture());
-    Inquiry saved = captor.getValue();
-    assertThat(saved.category).isEqualTo("ORDER_QUERY");
-    assertThat(saved.aiCategory).isEqualTo("ORDER_QUERY");
-    assertThat(saved.confidence).isEqualTo(0.95);
-    assertThat(saved.needsHumanReview).isFalse();
-    assertThat(saved.suggestedReply).isEqualTo("Track your order.");
-    assertThat(saved.analysisSource).isEqualTo("AI");
+    // EN: Two writes: raw first (all AI fields null), then the analysis update.
+    // 中文：两次写入：先原始咨询（AI 字段全空），再回填分析结果。
+    assertThat(savedSnapshots).hasSize(2);
+    Inquiry raw = savedSnapshots.get(0);
+    assertThat(raw.customerEmail).isEqualTo(EMAIL);
+    assertThat(raw.subject).isEqualTo(SUBJECT);
+    assertThat(raw.body).isEqualTo(BODY);
+    assertThat(raw.category).isNull();
+    assertThat(raw.confidence).isNull();
+    assertThat(raw.analysisSource).isNull();
+    Inquiry enriched = savedSnapshots.get(1);
+    assertThat(enriched.category).isEqualTo("ORDER_QUERY");
+    assertThat(enriched.aiCategory).isEqualTo("ORDER_QUERY");
+    assertThat(enriched.confidence).isEqualTo(0.95);
+    assertThat(enriched.needsHumanReview).isFalse();
+    assertThat(enriched.suggestedReply).isEqualTo("Track your order.");
+    assertThat(enriched.analysisSource).isEqualTo("AI");
   }
 
   @Test
@@ -165,18 +245,18 @@ class InquiryAiIntegrationTest {
     assertThat(result.needsHumanReview()).isTrue();
     assertThat(result.suggestedReply()).isNull();
     assertThat(result.analysisSource()).isEqualTo("RULE_BASED");
+    assertThat(result.analysisStatus()).isEqualTo("SUCCESS");
     assertThat(result.replayed()).isFalse();
     // EN: The internal diagnostic message must never appear in the API payload.
     // 中文：内部诊断信息绝不能出现在 API 响应中。
     assertThat(MAPPER.valueToTree(result).has("error_message")).isFalse();
 
-    ArgumentCaptor<Inquiry> captor = ArgumentCaptor.forClass(Inquiry.class);
-    verify(repo).saveAndFlush(captor.capture());
-    Inquiry saved = captor.getValue();
-    assertThat(saved.confidence).isEqualTo(0.5);
-    assertThat(saved.needsHumanReview).isTrue();
-    assertThat(saved.suggestedReply).isNull();
-    assertThat(saved.analysisSource).isEqualTo("RULE_BASED");
+    assertThat(savedSnapshots).hasSize(2);
+    Inquiry enriched = savedSnapshots.get(1);
+    assertThat(enriched.confidence).isEqualTo(0.5);
+    assertThat(enriched.needsHumanReview).isTrue();
+    assertThat(enriched.suggestedReply).isNull();
+    assertThat(enriched.analysisSource).isEqualTo("RULE_BASED");
   }
 
   @Test
@@ -201,8 +281,9 @@ class InquiryAiIntegrationTest {
     assertThat(result.needsHumanReview()).isTrue();
     assertThat(result.suggestedReply()).isEqualTo("We will follow up");
     assertThat(result.analysisSource()).isEqualTo("AI");
+    assertThat(result.analysisStatus()).isEqualTo("SUCCESS");
     assertThat(result.replayed()).isTrue();
-    assertThat(handler.method.get()).isNull(); // EN: no HTTP call. 中文：没有发生 HTTP 调用。
+    assertThat(handler.callCount.get()).isZero(); // EN: no HTTP call. 中文：没有发生 HTTP 调用。
     verify(repo, never()).saveAndFlush(any());
   }
 
@@ -298,35 +379,38 @@ class InquiryAiIntegrationTest {
   }
 
   @Test
-  @DisplayName("Python returns 500 -> 502 and nothing persisted")
+  @DisplayName("Python returns 500 -> inquiry kept, analysis FAILED, no misleading create error")
   void pythonServerError() {
     handler.response = response(500, "{\"detail\":\"boom\"}");
 
-    assertThatThrownBy(() -> service.create(payload(), "key-500"))
-        .isInstanceOf(ResponseStatusException.class)
-        .satisfies(
-            e ->
-                assertThat(((ResponseStatusException) e).getStatusCode())
-                    .isEqualTo(HttpStatus.BAD_GATEWAY));
+    InquiryResponse result = service.create(payload(), "key-500");
 
-    verify(repo, never()).saveAndFlush(any());
+    assertThat(result.analysisStatus()).isEqualTo("FAILED");
+    assertThat(result.analysisError()).isEqualTo("AI_HTTP_ERROR");
+    assertThat(result.category()).isNull();
+    assertThat(result.replayed()).isFalse();
+    // EN: Original inquiry was committed before the HTTP call and is NOT rolled back.
+    // 中文：原始咨询在 HTTP 调用前已提交，绝不回滚。
+    assertThat(savedSnapshots).hasSize(1);
+    assertThat(savedSnapshots.get(0).customerEmail).isEqualTo(EMAIL);
+    assertThat(savedSnapshots.get(0).body).isEqualTo(BODY);
   }
 
   @Test
-  @DisplayName("Python connection failure -> 502")
+  @DisplayName("Python connection failure -> inquiry kept, analysis FAILED (AI_UNAVAILABLE)")
   void connectionFailure() {
     server.stop(0); // EN: close the stub so the port refuses connections. 中文：关闭桩服务，让端口拒绝连接。
 
-    assertThatThrownBy(() -> service.create(payload(), "key-conn-fail"))
-        .isInstanceOf(ResponseStatusException.class)
-        .satisfies(
-            e ->
-                assertThat(((ResponseStatusException) e).getStatusCode())
-                    .isEqualTo(HttpStatus.BAD_GATEWAY));
+    InquiryResponse result = service.create(payload(), "key-conn-fail");
+
+    assertThat(result.analysisStatus()).isEqualTo("FAILED");
+    assertThat(result.analysisError()).isEqualTo("AI_UNAVAILABLE");
+    assertThat(savedSnapshots).hasSize(1);
+    assertThat(savedSnapshots.get(0).customerEmail).isEqualTo(EMAIL);
   }
 
   @Test
-  @DisplayName("Python call timeout -> 502")
+  @DisplayName("Python call timeout -> inquiry kept, analysis FAILED (AI_TIMEOUT)")
   void pythonTimeout() throws IOException {
     // EN: Rebind on a fresh port with a handler that sleeps longer than the client read timeout.
     // 中文：在新端口重新绑定，处理器 sleep 时间超过客户端读超时。
@@ -338,12 +422,12 @@ class InquiryAiIntegrationTest {
     // 中文：读超时 1 秒，桩服务 sleep 2 秒，必然超时。
     service = new InquiryServiceImpl(repo, MAPPER, RestClient.builder(), baseUrl, 3, 1);
 
-    assertThatThrownBy(() -> service.create(payload(), "key-timeout"))
-        .isInstanceOf(ResponseStatusException.class)
-        .satisfies(
-            e ->
-                assertThat(((ResponseStatusException) e).getStatusCode())
-                    .isEqualTo(HttpStatus.BAD_GATEWAY));
+    InquiryResponse result = service.create(payload(), "key-timeout");
+
+    assertThat(result.analysisStatus()).isEqualTo("FAILED");
+    assertThat(result.analysisError()).isEqualTo("AI_TIMEOUT");
+    assertThat(savedSnapshots).hasSize(1);
+    assertThat(savedSnapshots.get(0).customerEmail).isEqualTo(EMAIL);
   }
 
   @Test
@@ -383,17 +467,12 @@ class InquiryAiIntegrationTest {
     logger.addAppender(appender);
     try {
       // Success path: request/response/result logs.
-      handler.response =
-          response(
-              200,
-              "{\"category\":\"ORDER_QUERY\",\"confidence\":0.9,\"needs_human_review\":false,"
-                  + "\"analysis_source\":\"AI\",\"error_message\":null}");
+      handler.response = response(200, AI_JSON);
       service.create(payload(), "key-log-success");
 
-      // Failure path: only the exception type is logged.
+      // Failure path: only the exception type is logged, no throwable reaches the logger.
       server.stop(0);
-      assertThatThrownBy(() -> service.create(payload(), "key-log-fail"))
-          .isInstanceOf(ResponseStatusException.class);
+      service.create(payload(), "key-log-fail");
 
       String all =
           String.join("\n", appender.list.stream().map(e -> e.getFormattedMessage()).toList());
@@ -434,36 +513,156 @@ class InquiryAiIntegrationTest {
   }
 
   @Test
-  @DisplayName("Invalid category -> 502 and nothing persisted")
+  @DisplayName("Invalid category -> inquiry kept, analysis FAILED (AI_INVALID_RESPONSE)")
   void invalidCategory() {
-    assertRejected(analysisJson("UNKNOWN_CATEGORY", "0.9", "false", "reply", "AI"));
+    assertAnalysisFailed(analysisJson("UNKNOWN_CATEGORY", "0.9", "false", "reply", "AI"));
   }
 
-  @ParameterizedTest(name = "confidence {0} is rejected with 502")
+  @ParameterizedTest(name = "confidence {0} rejected with FAILED")
   @ValueSource(strings = {"null", "1.1", "-0.01", "NaN", "1e309", "-1e309"})
   void invalidConfidence(String confidence) {
-    assertRejected(analysisJson("ORDER_QUERY", confidence, "false", "reply", "AI"));
+    assertAnalysisFailed(analysisJson("ORDER_QUERY", confidence, "false", "reply", "AI"));
   }
 
   @Test
-  @DisplayName("Invalid analysis source -> 502 and nothing persisted")
+  @DisplayName("Invalid analysis source -> inquiry kept, analysis FAILED")
   void invalidAnalysisSource() {
-    assertRejected(analysisJson("ORDER_QUERY", "0.9", "false", "reply", "GROQ"));
+    assertAnalysisFailed(analysisJson("ORDER_QUERY", "0.9", "false", "reply", "GROQ"));
   }
 
   @Test
-  @DisplayName("Missing review flag -> 502 and nothing persisted")
+  @DisplayName("Missing review flag -> inquiry kept, analysis FAILED")
   void missingReviewFlag() {
-    assertRejected(analysisJson("ORDER_QUERY", "0.9", "null", "reply", "AI"));
+    assertAnalysisFailed(analysisJson("ORDER_QUERY", "0.9", "null", "reply", "AI"));
   }
 
   @Test
-  @DisplayName("Review flag inconsistent with category -> 502 and nothing persisted")
+  @DisplayName("Review flag inconsistent with category -> inquiry kept, analysis FAILED")
   void inconsistentReviewFlag() {
     // EN: REFUND/COMPLAINT/OTHER require true; ORDER_QUERY/PRODUCT_INQUIRY require false.
     // 中文：REFUND/COMPLAINT/OTHER 必须为 true；ORDER_QUERY/PRODUCT_INQUIRY 必须为 false。
-    assertRejected(analysisJson("REFUND", "0.9", "false", "reply", "AI"));
-    assertRejected(analysisJson("ORDER_QUERY", "0.9", "true", "reply", "AI"));
+    assertAnalysisFailed(analysisJson("REFUND", "0.9", "false", "reply", "AI"));
+    assertAnalysisFailed(analysisJson("ORDER_QUERY", "0.9", "true", "reply", "AI"));
+  }
+
+  @Test
+  @DisplayName("Malformed JSON -> inquiry kept, analysis FAILED (AI_INVALID_RESPONSE)")
+  void malformedJson() {
+    handler.response = response(200, "not-json-at-all");
+
+    InquiryResponse result = service.create(payload(), "key-bad-json");
+
+    assertThat(result.analysisStatus()).isEqualTo("FAILED");
+    assertThat(result.analysisError()).isEqualTo("AI_INVALID_RESPONSE");
+    assertThat(savedSnapshots).hasSize(1);
+    assertThat(savedSnapshots.get(0).customerEmail).isEqualTo(EMAIL);
+  }
+
+  @Test
+  @DisplayName("AI succeeded but DB analysis update failed -> inquiry kept, FAILED result")
+  void dbUpdateFailureKeepsRawInquiry() {
+    handler.response = response(200, AI_JSON);
+    failSaveOnCall =
+        2; // EN: raw INSERT (1st) succeeds, analysis UPDATE (2nd) fails. 中文：原始 INSERT 成功，分析 UPDATE
+    // 失败。
+
+    InquiryResponse result = service.create(payload(), "key-db-fail");
+
+    assertThat(result.analysisStatus()).isEqualTo("FAILED");
+    assertThat(result.analysisError()).isEqualTo("AI_PERSIST_FAILED");
+    // EN: Never expose AI fields that were NOT persisted. 中文：绝不暴露未落库的 AI 字段。
+    assertThat(result.category()).isNull();
+    assertThat(result.confidence()).isNull();
+    assertThat(result.analysisSource()).isNull();
+    assertThat(saveCalls.get()).isEqualTo(2);
+    // EN: The raw INSERT (first save) succeeded and stayed clean; only the analysis UPDATE failed.
+    // 中文：原始 INSERT（第一次 save）成功且保持干净；仅分析 UPDATE 失败。
+    assertThat(store.get("key-db-fail")).isNotNull();
+    assertThat(savedSnapshots).hasSize(1); // EN: only the raw write committed. 中文：只有原始写入已提交。
+    assertThat(savedSnapshots.get(0).analysisSource).isNull();
+  }
+
+  @Test
+  @DisplayName("Blank idempotency key -> 400, nothing persisted, no Python call")
+  void blankKeyRejected() {
+    assertThatThrownBy(() -> service.create(payload(), "  "))
+        .isInstanceOf(ResponseStatusException.class)
+        .satisfies(
+            e ->
+                assertThat(((ResponseStatusException) e).getStatusCode())
+                    .isEqualTo(HttpStatus.BAD_REQUEST));
+    assertThat(savedSnapshots).isEmpty();
+    assertThat(handler.callCount.get()).isZero();
+  }
+
+  @Test
+  @DisplayName("Same key submitted twice with different content returns the original record")
+  void sameKeyDifferentContentReturnsOriginal() {
+    handler.response = response(200, AI_JSON);
+    InquiryResponse first = service.create(payload(), "key-same");
+
+    Map<String, String> different =
+        Map.of(
+            "customer_email", "another@example.com", "subject", "changed", "body", "changed body");
+    InquiryResponse second = service.create(different, "key-same");
+
+    assertThat(second.inquiryId()).isEqualTo(first.inquiryId());
+    assertThat(second.category()).isEqualTo("ORDER_QUERY");
+    assertThat(second.replayed()).isTrue();
+    assertThat(second.analysisStatus()).isEqualTo("SUCCESS");
+    assertThat(store).hasSize(1);
+    assertThat(handler.callCount.get()).isEqualTo(1); // EN: no second Python call. 中文：未二次调用 Python。
+  }
+
+  @Test
+  @DisplayName("Different keys create different inquiries and each calls Python once")
+  void differentKeysCreateDifferentInquiries() {
+    handler.response = response(200, AI_JSON);
+
+    InquiryResponse a = service.create(payload(), "key-a");
+    InquiryResponse b = service.create(payload(), "key-b");
+
+    assertThat(a.inquiryId()).isNotEqualTo(b.inquiryId());
+    assertThat(a.replayed()).isFalse();
+    assertThat(b.replayed()).isFalse();
+    assertThat(store).hasSize(2);
+    assertThat(handler.callCount.get()).isEqualTo(2);
+  }
+
+  @Test
+  @DisplayName("Two concurrent requests with the same key create one inquiry and call Python once")
+  void concurrentSameKeyCreatesOnceAndCallsPythonOnce() throws Exception {
+    handler.response = response(200, AI_JSON);
+    int threads = 2;
+    ExecutorService pool = Executors.newFixedThreadPool(threads);
+    CountDownLatch start = new CountDownLatch(1);
+    CountDownLatch done = new CountDownLatch(threads);
+    List<InquiryResponse> results = new CopyOnWriteArrayList<>();
+
+    for (int i = 0; i < threads; i++) {
+      pool.submit(
+          () -> {
+            try {
+              start.await();
+              results.add(service.create(payload(), "key-concurrent"));
+            } catch (Exception ignored) {
+              // EN: recorded via results size below. 中文：通过 results 数量体现。
+            } finally {
+              done.countDown();
+            }
+          });
+    }
+    start.countDown();
+    boolean finished = done.await(10, TimeUnit.SECONDS);
+    pool.shutdownNow();
+
+    assertThat(finished).isTrue();
+    assertThat(results).hasSize(2);
+    assertThat(store).hasSize(1); // EN: no duplicate inquiry. 中文：无重复咨询。
+    assertThat(handler.callCount.get()).isEqualTo(1); // EN: no duplicate AI call. 中文：无重复 AI 调用。
+    assertThat(results.stream().filter(r -> !r.replayed()).count()).isEqualTo(1);
+    assertThat(results.stream().filter(r -> r.replayed()).count()).isEqualTo(1);
+    assertThat(results.stream().anyMatch(r -> "SUCCESS".equals(r.analysisStatus()))).isTrue();
   }
 
   @Test
@@ -494,15 +693,17 @@ class InquiryAiIntegrationTest {
 
   // ---------- helpers ----------
 
-  private void assertRejected(String json) {
+  private AtomicInteger invalidKeySeq = new AtomicInteger();
+
+  private void assertAnalysisFailed(String json) {
     handler.response = response(200, json);
-    assertThatThrownBy(() -> service.create(payload(), "key-invalid"))
-        .isInstanceOf(ResponseStatusException.class)
-        .satisfies(
-            e ->
-                assertThat(((ResponseStatusException) e).getStatusCode())
-                    .isEqualTo(HttpStatus.BAD_GATEWAY));
-    verify(repo, never()).saveAndFlush(any());
+    InquiryResponse result =
+        service.create(payload(), "key-invalid-" + invalidKeySeq.incrementAndGet());
+    assertThat(result.analysisStatus()).isEqualTo("FAILED");
+    assertThat(result.analysisError()).isEqualTo("AI_INVALID_RESPONSE");
+    assertThat(result.category()).isNull();
+    assertThat(savedSnapshots).hasSize(invalidKeySeq.get());
+    assertThat(savedSnapshots.get(savedSnapshots.size() - 1).customerEmail).isEqualTo(EMAIL);
   }
 
   /**
@@ -553,9 +754,11 @@ class InquiryAiIntegrationTest {
     volatile StubResponse response = response(200, "{}");
     final AtomicReference<String> method = new AtomicReference<>();
     final AtomicReference<String> requestId = new AtomicReference<>();
+    final AtomicInteger callCount = new AtomicInteger();
 
     @Override
     public void handle(HttpExchange exchange) throws IOException {
+      callCount.incrementAndGet();
       method.set(exchange.getRequestMethod());
       requestId.set(exchange.getRequestHeaders().getFirst("X-Request-ID"));
       // EN: Drain the request body so the client is not blocked. 中文：读掉请求体，避免客户端阻塞。

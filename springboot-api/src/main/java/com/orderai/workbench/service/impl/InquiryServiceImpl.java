@@ -1,15 +1,17 @@
 package com.orderai.workbench.service.impl;
 
-import com.orderai.workbench.entity.Inquiry;
-
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.orderai.workbench.dto.InquiryAnalysisRequest;
 import com.orderai.workbench.dto.response.InquiryAnalysisResponse;
 import com.orderai.workbench.dto.response.InquiryResponse;
+import com.orderai.workbench.entity.Inquiry;
 import com.orderai.workbench.repository.InquiryRepository;
 import com.orderai.workbench.service.InquiryService;
 import java.io.IOException;
+import java.io.InterruptedIOException;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -21,12 +23,12 @@ import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.server.ResponseStatusException;
@@ -82,26 +84,57 @@ public class InquiryServiceImpl implements InquiryService {
     return readTimeout;
   }
 
-  @Transactional
+  /**
+   * EN: Create an inquiry reliably. Order: validate -> persist raw inquiry -> call Python -> write
+   * analysis. There is deliberately NO @Transactional here: repository calls each commit in their
+   * own short transaction, so the remote HTTP call never holds a database transaction. The raw
+   * inquiry is committed before Python is contacted and is never rolled back on an AI failure.
+   * Idempotency relies on the UNIQUE constraint on inquiries.idempotency_key (DB-level, atomic).
+   * 中文：可靠地创建咨询。顺序：校验 -> 落库原始咨询 -> 调 Python -> 回填分析结果。此处刻意不加 @Transactional： 每次 repository
+   * 调用各自在短事务中提交，远程 HTTP 调用绝不持有数据库事务。原始咨询在调用 Python 之前就已提交， AI 失败时绝不回滚。幂等依赖
+   * inquiries.idempotency_key 的唯一约束（数据库级、原子）。
+   */
   public InquiryResponse create(Map<String, String> p, String key) {
-    // Return the stored result for retries instead of creating duplicate inquiries.
+    // Step 1: parameter validation. The key defines idempotency scope and must be usable.
+    if (key == null || key.isBlank()) {
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, "Idempotency-Key must not be blank");
+    }
+
+    // Step 2: fast-path replay. An existing key never calls Python again.
     Optional<Inquiry> old = repo.findByIdempotencyKey(key);
     if (old.isPresent()) {
       Inquiry existing = old.get();
       log.info("Inquiry idempotency replay: inquiryId={}", existing.id);
-      // EN: Return the original stored analysis, not null placeholders; never call Python again.
-      // 中文：返回最初持久化的完整分析结果而非空占位值；绝不再次调用 Python。
-      return new InquiryResponse(
-          existing.id,
-          existing.category,
-          existing.aiCategory,
-          existing.confidence,
-          existing.needsHumanReview,
-          existing.suggestedReply,
-          existing.analysisSource,
-          true);
+      return replayResponse(existing);
     }
-    // Delegate content analysis to Python; Java owns persistence and business workflow.
+
+    // Step 3: persist the raw inquiry FIRST, with all AI fields left null. Own transaction.
+    Inquiry original;
+    try {
+      original =
+          repo.saveAndFlush(
+              new Inquiry(
+                  key,
+                  p.get("customer_email"),
+                  p.getOrDefault("subject", ""),
+                  p.get("body"),
+                  null));
+    } catch (DataIntegrityViolationException duplicate) {
+      // EN: Concurrent request won the unique-key race. Replay the winner's row, never call Python.
+      // 中文：并发请求抢到了唯一键。重放获胜者的记录，绝不调用 Python。
+      log.info("Inquiry idempotency conflict on insert; replaying stored inquiry");
+      Inquiry winner =
+          repo.findByIdempotencyKey(key)
+              .orElseThrow(
+                  () ->
+                      new ResponseStatusException(
+                          HttpStatus.CONFLICT, "Concurrent inquiry creation"));
+      return replayResponse(winner);
+    }
+    log.info("Inquiry original persisted: inquiryId={}", original.id);
+
+    // Step 4: delegate analysis to Python. No database transaction is held across this HTTP call.
     InquiryAnalysisRequest request =
         new InquiryAnalysisRequest(
             p.get("customer_email"), p.getOrDefault("subject", ""), p.get("body"));
@@ -112,44 +145,129 @@ public class InquiryServiceImpl implements InquiryService {
         request.customerEmail() != null,
         request.subject() == null ? 0 : request.subject().length(),
         request.body() == null ? 0 : request.body().length());
-    InquiryAnalysisResponse analysis = analyzeWithPython(request);
-    // EN: Reject an incomplete or inconsistent analysis before any row is written.
-    // 中文：写入任何记录之前，拒绝不完整或自相矛盾的分析结果。
-    validateAnalysis(analysis);
-    Inquiry saved =
-        repo.saveAndFlush(
-            new Inquiry(
-                key,
-                p.get("customer_email"),
-                p.getOrDefault("subject", ""),
-                p.get("body"),
-                analysis.category(),
-                analysis.confidence(),
-                analysis.needsHumanReview(),
-                analysis.suggestedReply(),
-                analysis.analysisSource()));
-    log.info(
-        "Inquiry persisted: inquiryId={} category={} analysisSource={}",
-        saved.id,
-        saved.category,
-        saved.analysisSource);
+
+    InquiryAnalysisResponse analysis;
+    try {
+      analysis = analyzeWithPython(request);
+      // EN: Reject an incomplete or inconsistent analysis before writing any analysis result.
+      // 中文：写入任何分析结果之前，拒绝不完整或自相矛盾的分析结果。
+      validateAnalysis(analysis);
+    } catch (ResponseStatusException failure) {
+      // EN: AI failed but the raw inquiry is already committed. Return a FAILED result, never a
+      // misleading "creation failed" error. The failure code is a fixed safe token.
+      // 中文：AI 失败但原始咨询已提交。返回 FAILED 结果，绝不返回误导性的“创建失败”错误。失败码是固定安全令牌。
+      String code = classifyAnalysisFailure(failure);
+      log.warn("Inquiry analysis failed: inquiryId={} code={}", original.id, code);
+      return failedResponse(original.id, code);
+    }
+
+    // Step 5: AI succeeded -> write the analysis result back onto the persisted row. Own
+    // transaction.
+    applyAnalysis(original, analysis);
+    try {
+      Inquiry updated = repo.saveAndFlush(original);
+      log.info(
+          "Inquiry analysis persisted: inquiryId={} category={} analysisSource={}",
+          updated.id,
+          updated.category,
+          updated.analysisSource);
+      return successResponse(updated);
+    } catch (RuntimeException dbFailure) {
+      // EN: Raw inquiry remains in the database; only the AI result was not saved. Report the
+      // failure honestly so it can be retried/recovered (see T2: analysis_status persistence).
+      // 中文：原始咨询仍在库中，仅 AI 结果未保存。如实上报失败以便重试/恢复（见 T2：analysis_status 落库）。
+      log.error(
+          "Inquiry analysis persist failed: inquiryId={} errorType={}",
+          original.id,
+          dbFailure.getClass().getSimpleName());
+      return failedResponse(original.id, "AI_PERSIST_FAILED");
+    }
+  }
+
+  private void applyAnalysis(Inquiry inquiry, InquiryAnalysisResponse analysis) {
+    inquiry.category = analysis.category();
+    inquiry.aiCategory = analysis.category();
+    inquiry.confidence = analysis.confidence();
+    inquiry.needsHumanReview = analysis.needsHumanReview();
+    inquiry.suggestedReply = analysis.suggestedReply();
+    inquiry.analysisSource = analysis.analysisSource();
+  }
+
+  private InquiryResponse successResponse(Inquiry inquiry) {
     return new InquiryResponse(
-        saved.id,
-        saved.category,
-        saved.aiCategory,
-        saved.confidence,
-        saved.needsHumanReview,
-        saved.suggestedReply,
-        saved.analysisSource,
+        inquiry.id,
+        inquiry.category,
+        inquiry.aiCategory,
+        inquiry.confidence,
+        inquiry.needsHumanReview,
+        inquiry.suggestedReply,
+        inquiry.analysisSource,
+        "SUCCESS",
+        null,
         false);
+  }
+
+  private InquiryResponse failedResponse(Long inquiryId, String code) {
+    // EN: A failed analysis response deliberately carries NO analysis fields, because no analysis
+    // result was persisted. Only the inquiry id (the raw row) and a safe failure code are returned.
+    // 中文：分析失败的响应刻意不携带任何分析字段，因为没有任何分析结果被持久化。只返回咨询 id（原始记录）与安全失败码。
+    return new InquiryResponse(
+        inquiryId, null, null, null, null, null, null, "FAILED", code, false);
+  }
+
+  private InquiryResponse replayResponse(Inquiry inquiry) {
+    // EN: analysis_status is derived from the persisted snapshot: a row with analysis_source is a
+    // completed analysis; a row without it is still pending/failed (T1 cannot tell them apart
+    // without a persisted status column -> T2 dependency). Never fabricate analysis values.
+    // 中文：analysis_status 由持久化快照派生：有 analysis_source 即为分析完成；无则为处理中/失败（T1 无状态列，
+    // 无法区分二者 -> T2 依赖）。绝不伪造分析值。
+    String status = inquiry.analysisSource == null ? "PENDING" : "SUCCESS";
+    return new InquiryResponse(
+        inquiry.id,
+        inquiry.category,
+        inquiry.aiCategory,
+        inquiry.confidence,
+        inquiry.needsHumanReview,
+        inquiry.suggestedReply,
+        inquiry.analysisSource,
+        status,
+        null,
+        true);
+  }
+
+  private String classifyAnalysisFailure(ResponseStatusException failure) {
+    String reason = failure.getReason() == null ? "" : failure.getReason();
+    if (reason.startsWith("Invalid inquiry analysis response")
+        || hasCause(failure, JsonProcessingException.class)) {
+      return "AI_INVALID_RESPONSE";
+    }
+    if (hasCause(failure, SocketTimeoutException.class)
+        || hasCause(failure, InterruptedIOException.class)) {
+      return "AI_TIMEOUT";
+    }
+    if ("Inquiry analysis service failed".equals(reason)) {
+      return "AI_HTTP_ERROR";
+    }
+    return "AI_UNAVAILABLE";
+  }
+
+  private static boolean hasCause(Throwable throwable, Class<? extends Throwable> type) {
+    Throwable current = throwable;
+    while (current != null) {
+      if (type.isInstance(current)) {
+        return true;
+      }
+      current = current.getCause();
+    }
+    return false;
   }
 
   /**
    * EN: Validate every required analysis field. A missing value is distinguished from a valid one
-   * through nullable Double/Boolean in the DTO; invalid responses become 502 and are never saved.
-   * error_message is internal diagnostics and is deliberately not part of inquiry data.
-   * 中文：校验每个必填分析字段。DTO 使用可空 Double/Boolean 区分字段缺失与合法值； 非法响应返回 502 且绝不落库。error_message
-   * 属于内部诊断信息，刻意不进入咨询数据。
+   * through nullable Double/Boolean in the DTO; an invalid response is rejected so NO analysis
+   * field is written (the raw inquiry, however, is already committed and kept). error_message is
+   * internal diagnostics and is deliberately not part of inquiry data. 中文：校验每个必填分析字段。DTO 使用可空
+   * Double/Boolean 区分字段缺失与合法值；非法响应被拒绝，任何分析字段都不写入 （但原始咨询已提交且保留）。error_message 属于内部诊断信息，刻意不进入咨询数据。
    */
   private void validateAnalysis(InquiryAnalysisResponse analysis) {
     if (analysis == null
