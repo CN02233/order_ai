@@ -3,6 +3,7 @@ package com.orderai.workbench.entity;
 import jakarta.persistence.*;
 import java.time.LocalDateTime;
 import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.UpdateTimestamp;
 
 @Entity
 @Table(name = "inquiries")
@@ -48,6 +49,60 @@ public class Inquiry {
 
   @Column(name = "analysis_source", length = 20)
   public String analysisSource;
+
+  // EN: Current business state. All new state fields are nullable on purpose: historical rows have
+  //     no source for them, so V8 leaves them NULL instead of inventing a completed state.
+  // 中文：当前业务状态。新增状态字段刻意可空：历史记录没有来源，V8 保持 NULL，不伪造完成状态。
+  @Column(name = "status", length = 32)
+  public String status;
+
+  @Column(name = "priority", length = 16)
+  public String priority;
+
+  @Column(name = "category_source", length = 16)
+  public String categorySource;
+
+  @Column(name = "priority_source", length = 16)
+  public String prioritySource;
+
+  @Column(name = "analysis_status", length = 16)
+  public String analysisStatus;
+
+  // EN: Logical reference to the current analysis row, deliberately NOT a JPA association.
+  //     A physical FK here would form a cycle with inquiry_analysis.inquiry_id and would make
+  //     deletion of either side require the other. Resolve it through InquiryAnalysisRepository
+  //     when the full analysis row is needed; no cascade can touch append-only history.
+  // 中文：指向当前分析记录的逻辑引用，刻意不建 JPA 关联。物理外键会与 inquiry_analysis.inquiry_id
+  //     形成循环，导致任一方删除都受另一方牵制。需要完整分析记录时通过 InquiryAnalysisRepository 查询；
+  //     任何级联都不会触及只追加的历史表。
+  @Column(name = "current_analysis_id")
+  public Long currentAnalysisId;
+
+  @Column(name = "handled_by", length = 100)
+  public String handledBy;
+
+  @Column(name = "handled_at")
+  public LocalDateTime handledAt;
+
+  @Column(name = "handling_note", columnDefinition = "TEXT")
+  public String handlingNote;
+
+  @UpdateTimestamp
+  @Column(
+      name = "updated_at",
+      nullable = false,
+      columnDefinition = "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP")
+  public LocalDateTime updatedAt;
+
+  @Column(name = "resolved_at")
+  public LocalDateTime resolvedAt;
+
+  @Column(name = "closed_at")
+  public LocalDateTime closedAt;
+
+  @Version
+  @Column(name = "version", nullable = false)
+  public Long version;
 
   @CreationTimestamp
   @Column(name = "created_at", nullable = false, updatable = false)

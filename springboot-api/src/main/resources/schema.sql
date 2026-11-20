@@ -1,5 +1,6 @@
 -- Full schema for a brand-new database.
--- Existing databases get the same state by applying V2 -> V3 -> V4 -> V5 -> V6 -> V7 from db/migration/.
+-- Existing databases get the same state by applying V2 -> V3 -> V4 -> V5 -> V6 -> V7 -> V8
+-- from db/migration/.
 CREATE TABLE IF NOT EXISTS customers(
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   email VARCHAR(255) UNIQUE NOT NULL,
@@ -87,6 +88,9 @@ CREATE TABLE IF NOT EXISTS shipment_events(
   CONSTRAINT fk_shipment_events_shipment FOREIGN KEY(shipment_id) REFERENCES shipments(id)
 );
 
+-- Current business state only. Analysis and manual-handling histories live in their own tables.
+-- New status/priority fields stay NULL until a business flow sets them; unknown history is never
+-- backfilled as a completed state.
 CREATE TABLE IF NOT EXISTS inquiries(
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   idempotency_key VARCHAR(128) UNIQUE NOT NULL,
@@ -101,7 +105,67 @@ CREATE TABLE IF NOT EXISTS inquiries(
   needs_human_review BOOLEAN NULL,
   suggested_reply TEXT NULL,
   analysis_source VARCHAR(20) NULL,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  status VARCHAR(32) NULL,
+  priority VARCHAR(16) NULL,
+  category_source VARCHAR(16) NULL,
+  priority_source VARCHAR(16) NULL,
+  analysis_status VARCHAR(16) NULL,
+  -- Logical reference to inquiry_analysis(id); no physical FK, to avoid a cyclic dependency.
+  current_analysis_id BIGINT NULL,
+  handled_by VARCHAR(100) NULL,
+  handled_at TIMESTAMP NULL,
+  handling_note TEXT NULL,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  resolved_at TIMESTAMP NULL,
+  closed_at TIMESTAMP NULL,
+  version BIGINT NOT NULL DEFAULT 0,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT chk_inquiries_status CHECK (status IS NULL OR status IN
+    ('PENDING','IN_PROGRESS','WAITING_CUSTOMER','RESOLVED','CLOSED')),
+  CONSTRAINT chk_inquiries_priority CHECK (priority IS NULL OR priority IN
+    ('LOW','MEDIUM','HIGH','URGENT')),
+  CONSTRAINT chk_inquiries_analysis_status CHECK (analysis_status IS NULL OR analysis_status IN
+    ('PENDING','PROCESSING','SUCCESS','FAILED')),
+  CONSTRAINT chk_inquiries_category_source CHECK (category_source IS NULL OR category_source IN ('AI','HUMAN')),
+  CONSTRAINT chk_inquiries_priority_source CHECK (priority_source IS NULL OR priority_source IN ('AI','HUMAN'))
+);
+
+-- Append-only AI analysis history: one row per attempt, version unique per inquiry.
+CREATE TABLE IF NOT EXISTS inquiry_analysis(
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  inquiry_id BIGINT NOT NULL,
+  version INT NOT NULL,
+  category VARCHAR(40) NULL,
+  priority VARCHAR(16) NULL,
+  confidence DECIMAL(5,4) NULL,
+  needs_human_review BOOLEAN NULL,
+  analysis_reason TEXT NULL,
+  suggested_reply TEXT NULL,
+  analysis_source VARCHAR(20) NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+  error_message TEXT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  completed_at TIMESTAMP NULL,
+  CONSTRAINT uq_inquiry_analysis_version UNIQUE (inquiry_id, version),
+  CONSTRAINT fk_inquiry_analysis_inquiry FOREIGN KEY (inquiry_id) REFERENCES inquiries(id),
+  CONSTRAINT chk_inquiry_analysis_status CHECK (status IN ('PENDING','PROCESSING','SUCCESS','FAILED')),
+  CONSTRAINT chk_inquiry_analysis_version CHECK (version > 0)
+);
+
+-- Append-only manual handling history. old_value/new_value are JSON documents stored as TEXT.
+CREATE TABLE IF NOT EXISTS inquiry_handling_record(
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  inquiry_id BIGINT NOT NULL,
+  operator_id VARCHAR(100) NULL,
+  action_type VARCHAR(40) NOT NULL,
+  old_value TEXT NULL,
+  new_value TEXT NULL,
+  note TEXT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_inquiry_handling_inquiry FOREIGN KEY (inquiry_id) REFERENCES inquiries(id),
+  CONSTRAINT chk_inquiry_handling_action CHECK (action_type IN
+    ('ASSIGN','STATUS_CHANGE','CATEGORY_CHANGE','PRIORITY_CHANGE','NOTE_ADD',
+     'REPLY_DRAFT','RESOLVE','CLOSE','REOPEN'))
 );
 
 CREATE TABLE IF NOT EXISTS refund_requests(
@@ -163,3 +227,8 @@ CREATE INDEX idx_shipments_status ON shipments(status);
 CREATE INDEX idx_shipment_items_line ON shipment_items(order_item_id);
 CREATE INDEX idx_shipment_items_shipment ON shipment_items(shipment_id);
 CREATE INDEX idx_shipment_events_shipment ON shipment_events(shipment_id, occurred_at);
+CREATE INDEX idx_inquiries_status ON inquiries(status);
+CREATE INDEX idx_inquiries_analysis_status ON inquiries(analysis_status);
+CREATE INDEX idx_inquiries_updated_at ON inquiries(updated_at);
+CREATE INDEX idx_inquiry_analysis_inquiry ON inquiry_analysis(inquiry_id);
+CREATE INDEX idx_inquiry_handling_inquiry_created ON inquiry_handling_record(inquiry_id, created_at);
