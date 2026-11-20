@@ -26,6 +26,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
@@ -245,6 +246,80 @@ class InquiryStatusFlowTest {
     assertThat(records).hasSize(4);
     assertThat(records).extracting(r -> r.actionType)
         .containsExactly("STATUS_CHANGE", "RESOLVE", "CLOSE", "REOPEN");
+  }
+
+  @Test
+  @DisplayName("Literal null JSON body is rejected with 400; empty object keeps existing validation")
+  void nullJsonBodyIsRejectedWith400() throws Exception {
+    Inquiry inquiry = seed("PENDING");
+
+    mockMvc
+        .perform(
+            patch("/api/inquiries/{id}/status", inquiry.id)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("null"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.status").value("error"))
+        .andExpect(jsonPath("$.message").value("Request body must not be null"));
+
+    // EN: An empty object must still take the existing invalid-status path.
+    // 中文：空对象必须继续走原有的非法状态校验路径。
+    mockMvc
+        .perform(
+            patch("/api/inquiries/{id}/status", inquiry.id)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{}"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.status").value("error"))
+        .andExpect(jsonPath("$.message").value("Invalid inquiry status"));
+
+    Inquiry reloaded = inquiries.findById(inquiry.id).orElseThrow();
+    assertThat(reloaded.status).isEqualTo("PENDING");
+    assertThat(history(inquiry.id)).isEmpty();
+  }
+
+  @Test
+  @DisplayName("Handling-record insert failure rolls back status and version in the same transaction")
+  void handlingRecordFailureRollsBackStatusChange() {
+    Inquiry seed = seed("PENDING");
+    long versionBefore = seed.version;
+    // EN: A test-only CHECK constraint scoped to this inquiry id makes the handling insert fail.
+    // 中文：测试专用 CHECK 约束只针对本次咨询 id，稳定制造处理历史写入失败。
+    String constraintName =
+        "CHK_FAIL_HANDLING_" + UUID.randomUUID().toString().replace("-", "");
+
+    try {
+      jdbc.update(
+          "ALTER TABLE inquiry_handling_record ADD CONSTRAINT "
+              + constraintName
+              + " CHECK (inquiry_id <> "
+              + seed.id
+              + ")");
+
+      assertThatThrownBy(() -> service.changeStatus(seed.id, "IN_PROGRESS"))
+          .isInstanceOf(DataIntegrityViolationException.class);
+
+      // EN: Read the committed database state directly so a stale persistence context cannot hide a
+      // partial commit.
+      // 中文：直接读取数据库中的已提交状态，避免旧持久化上下文掩盖部分提交。
+      String statusAfter =
+          jdbc.queryForObject(
+              "SELECT status FROM inquiries WHERE id = ?", String.class, seed.id);
+      Long versionAfter =
+          jdbc.queryForObject("SELECT version FROM inquiries WHERE id = ?", Long.class, seed.id);
+      Long historyCount =
+          jdbc.queryForObject(
+              "SELECT COUNT(*) FROM inquiry_handling_record WHERE inquiry_id = ?",
+              Long.class,
+              seed.id);
+
+      assertThat(statusAfter).isEqualTo("PENDING");
+      assertThat(versionAfter).isEqualTo(versionBefore);
+      assertThat(historyCount).isZero();
+    } finally {
+      jdbc.update(
+          "ALTER TABLE inquiry_handling_record DROP CONSTRAINT IF EXISTS " + constraintName);
+    }
   }
 
   @Test

@@ -131,7 +131,15 @@ public class InquiryController {
    */
   @PatchMapping("/{id}/status")
   public ApiResponse<InquiryStatusResponse> changeStatus(
-      @PathVariable long id, @RequestBody InquiryStatusUpdateRequest input) {
+      @PathVariable long id,
+      @RequestBody(required = false) InquiryStatusUpdateRequest input) {
+    // EN: required=false lets a literal JSON null reach this method as a null record. Reject it
+    // here as 400 through the shared handler instead of letting input.status() throw a 500 NPE.
+    // 中文：required=false 让 JSON 字面量 null 以 null 记录进入方法。在此显式拒绝并交给统一异常处理器返回
+    // 400，避免 input.status() 抛出 NullPointerException 变成 500。
+    if (input == null) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Request body must not be null");
+    }
     return ApiResponse.success(service.changeStatus(id, input.status()));
   }
 
