@@ -21,6 +21,7 @@ import com.orderai.workbench.dto.response.InquiryAnalysisResponse;
 import com.orderai.workbench.dto.response.InquiryManagementResponse;
 import com.orderai.workbench.dto.response.InquiryResponse;
 import com.orderai.workbench.entity.Inquiry;
+import com.orderai.workbench.repository.InquiryHandlingRecordRepository;
 import com.orderai.workbench.repository.InquiryRepository;
 import com.orderai.workbench.service.InquiryService;
 import com.orderai.workbench.service.impl.InquiryServiceImpl;
@@ -88,6 +89,9 @@ class InquiryAiIntegrationTest {
   private HttpServer server;
   private StubHandler handler;
   private InquiryRepository repo;
+  // EN: T3 added a handling-record dependency; T1 create tests never call changeStatus, so a plain
+  // mock is sufficient. 中文：T3 新增处理历史依赖；T1 创建测试不会调用 changeStatus，普通 mock 即可。
+  private InquiryHandlingRecordRepository handlingRecords;
   private InquiryServiceImpl service;
 
   // EN: Stateful fake store + write snapshots, so tests can assert the two-phase write order.
@@ -112,7 +116,9 @@ class InquiryAiIntegrationTest {
     server = startServer(handler);
     String baseUrl = "http://127.0.0.1:" + server.getAddress().getPort();
     setupStatefulRepo();
-    service = new InquiryServiceImpl(repo, MAPPER, RestClient.builder(), baseUrl, 3, 5);
+    service =
+        new InquiryServiceImpl(
+            repo, handlingRecords, MAPPER, RestClient.builder(), baseUrl, 3, 5);
   }
 
   /**
@@ -132,6 +138,7 @@ class InquiryAiIntegrationTest {
     findMissCount = new AtomicInteger();
     duplicateConflictCount = new AtomicInteger();
     repo = mock(InquiryRepository.class);
+    handlingRecords = mock(InquiryHandlingRecordRepository.class);
     when(repo.findByIdempotencyKey(anyString()))
         .thenAnswer(
             invocation -> {
@@ -456,7 +463,9 @@ class InquiryAiIntegrationTest {
     String baseUrl = "http://127.0.0.1:" + server.getAddress().getPort();
     // EN: 1s read timeout, stub sleeps 2s -> timeout is guaranteed.
     // 中文：读超时 1 秒，桩服务 sleep 2 秒，必然超时。
-    service = new InquiryServiceImpl(repo, MAPPER, RestClient.builder(), baseUrl, 3, 1);
+    service =
+        new InquiryServiceImpl(
+            repo, handlingRecords, MAPPER, RestClient.builder(), baseUrl, 3, 1);
 
     InquiryResponse result = service.create(payload(), "key-timeout");
 
@@ -488,7 +497,8 @@ class InquiryAiIntegrationTest {
   @DisplayName("Configured timeouts: connect 3s, read 20s by default")
   void defaultTimeouts() {
     InquiryServiceImpl defaults =
-        new InquiryServiceImpl(repo, MAPPER, RestClient.builder(), "http://127.0.0.1:8000", 3, 20);
+        new InquiryServiceImpl(
+            repo, handlingRecords, MAPPER, RestClient.builder(), "http://127.0.0.1:8000", 3, 20);
 
     assertThat(defaults.connectTimeout()).isEqualTo(Duration.ofSeconds(3));
     assertThat(defaults.readTimeout()).isEqualTo(Duration.ofSeconds(20));

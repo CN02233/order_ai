@@ -6,7 +6,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.orderai.workbench.dto.InquiryAnalysisRequest;
 import com.orderai.workbench.dto.response.InquiryAnalysisResponse;
 import com.orderai.workbench.dto.response.InquiryResponse;
+import com.orderai.workbench.dto.response.InquiryStatusResponse;
 import com.orderai.workbench.entity.Inquiry;
+import com.orderai.workbench.entity.InquiryHandlingRecord;
+import com.orderai.workbench.repository.InquiryHandlingRecordRepository;
 import com.orderai.workbench.repository.InquiryRepository;
 import com.orderai.workbench.service.InquiryService;
 import java.io.ByteArrayOutputStream;
@@ -17,6 +20,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
@@ -32,7 +36,9 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.server.ResponseStatusException;
@@ -47,12 +53,39 @@ public class InquiryServiceImpl implements InquiryService {
       Set.of("ORDER_QUERY", "PRODUCT_INQUIRY", "REFUND", "COMPLAINT", "OTHER");
   private static final Set<String> ALLOWED_ANALYSIS_SOURCES = Set.of("AI", "RULE_BASED");
   private static final Set<String> REVIEW_CATEGORIES = Set.of("REFUND", "COMPLAINT", "OTHER");
+
+  // EN: The five business statuses and their complete transition table. A status absent from the
+  // map or a target absent from the value set is rejected; there is no implicit "allow anything".
+  // 中文：五种业务状态及其完整转换表。映射中缺失的当前状态或值集中缺失的目标状态一律拒绝，不存在“默认全放行”。
+  private static final String STATUS_PENDING = "PENDING";
+  private static final String STATUS_IN_PROGRESS = "IN_PROGRESS";
+  private static final String STATUS_WAITING_CUSTOMER = "WAITING_CUSTOMER";
+  private static final String STATUS_RESOLVED = "RESOLVED";
+  private static final String STATUS_CLOSED = "CLOSED";
+
+  private static final Set<String> ALLOWED_STATUSES =
+      Set.of(
+          STATUS_PENDING,
+          STATUS_IN_PROGRESS,
+          STATUS_WAITING_CUSTOMER,
+          STATUS_RESOLVED,
+          STATUS_CLOSED);
+
+  private static final Map<String, Set<String>> STATUS_TRANSITIONS =
+      Map.of(
+          STATUS_PENDING, Set.of(STATUS_IN_PROGRESS, STATUS_CLOSED),
+          STATUS_IN_PROGRESS, Set.of(STATUS_WAITING_CUSTOMER, STATUS_RESOLVED, STATUS_CLOSED),
+          STATUS_WAITING_CUSTOMER, Set.of(STATUS_IN_PROGRESS, STATUS_CLOSED),
+          STATUS_RESOLVED, Set.of(STATUS_IN_PROGRESS, STATUS_CLOSED),
+          STATUS_CLOSED, Set.of(STATUS_PENDING));
+
   // EN: Fixed reason only: never include customer email/subject/body in an exception or log.
   // 中文：固定原因文本：异常与日志中绝不携带客户邮箱、主题或正文。
   private static final String CONTENT_MISMATCH_REASON =
       "Idempotency-Key reused with different request content";
 
   private final InquiryRepository repo;
+  private final InquiryHandlingRecordRepository handlingRecords;
   private final RestClient pythonClient;
   private final ObjectMapper objectMapper;
   private final String aiBaseUrl;
@@ -61,6 +94,7 @@ public class InquiryServiceImpl implements InquiryService {
 
   public InquiryServiceImpl(
       InquiryRepository r,
+      InquiryHandlingRecordRepository handlingRecords,
       ObjectMapper objectMapper,
       RestClient.Builder restClientBuilder,
       @Value("${app.ai.base-url:http://127.0.0.1:8000}") String url,
@@ -70,6 +104,7 @@ public class InquiryServiceImpl implements InquiryService {
       @Value("${app.ai.connect-timeout-seconds:3}") long connectTimeoutSeconds,
       @Value("${app.ai.read-timeout-seconds:20}") long readTimeoutSeconds) {
     repo = r;
+    this.handlingRecords = handlingRecords;
     this.objectMapper = objectMapper;
     this.aiBaseUrl = url.replaceAll("/+$", "");
     this.connectTimeout = Duration.ofSeconds(connectTimeoutSeconds);
@@ -201,6 +236,128 @@ public class InquiryServiceImpl implements InquiryService {
           original.id,
           dbFailure.getClass().getSimpleName());
       return failedResponse(original.id, "AI_PERSIST_FAILED");
+    }
+  }
+
+  /**
+   * EN: Move an inquiry to a new status. Validation order: load (404) -> current status initialized
+   * (409) -> target is a known status (400) -> same status is a no-op (200) -> transition allowed
+   * (409). State update and handling history share ONE transaction: a failed flush rolls both back.
+   * The {@code @Version} field on Inquiry supplies the optimistic lock; saveAndFlush forces the
+   * version check inside this transaction so a stale writer gets 409, never a silent overwrite.
+   *
+   * <p>中文：推进咨询状态。校验顺序：加载（404）-> 当前状态已初始化（409）-> 目标状态合法（400）-> 同状态无操作（200）
+   * -> 转换允许（409）。状态更新与处理历史共用同一事务：flush 失败时两者一起回滚。Inquiry 上的 {@code @Version}
+   * 提供乐观锁；saveAndFlush 让版本检查在当前事务内发生，过期写入得到 409，绝不静默覆盖。
+   */
+  @Override
+  @Transactional
+  public InquiryStatusResponse changeStatus(long id, String targetStatus) {
+    // Step 1: load the inquiry; a missing id is a 404, never an implicit creation.
+    Inquiry inquiry =
+        repo.findById(id)
+            .orElseThrow(
+                () -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Inquiry not found"));
+
+    // Step 2: historical rows have no status. Never guess PENDING for them.
+    String previousStatus = inquiry.status;
+    if (previousStatus == null || previousStatus.isBlank()) {
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT, "Inquiry status is not initialized");
+    }
+
+    // Step 3: the target must be one of the five defined statuses.
+    if (targetStatus == null || !ALLOWED_STATUSES.contains(targetStatus)) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid inquiry status");
+    }
+
+    // Step 4: same status is an idempotent no-op: no write, no history row.
+    if (previousStatus.equals(targetStatus)) {
+      return new InquiryStatusResponse(
+          inquiry.id, previousStatus, previousStatus, inquiry.updatedAt);
+    }
+
+    // Step 5: the transition must be explicitly listed; everything else is a 409.
+    if (!STATUS_TRANSITIONS.getOrDefault(previousStatus, Set.of()).contains(targetStatus)) {
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT,
+          "Illegal status transition: " + previousStatus + " -> " + targetStatus);
+    }
+
+    // Step 6-7: apply the status and the terminal timestamps. Terminal fields describe ONLY the
+    // current terminal state; reopening clears both, so no stale terminal time survives.
+    // 中文：更新状态与终态时间。终态字段只描述当前这次终态；重新打开时两个字段都清空，不留存过期终态时间。
+    LocalDateTime now = LocalDateTime.now();
+    inquiry.status = targetStatus;
+    if (STATUS_RESOLVED.equals(targetStatus)) {
+      inquiry.resolvedAt = now;
+      inquiry.closedAt = null;
+    } else if (STATUS_CLOSED.equals(targetStatus)) {
+      inquiry.closedAt = now;
+      inquiry.resolvedAt = null;
+    } else {
+      inquiry.resolvedAt = null;
+      inquiry.closedAt = null;
+    }
+
+    // Step 8-9: flush the state change first so the optimistic-lock check runs in THIS transaction,
+    // then append the handling record. A conflict or any later failure rolls the whole tx back.
+    // 中文：先 flush 状态变更，让乐观锁检查在本事务内发生，再追加处理历史；冲突或后续失败会让整个事务回滚。
+    Inquiry saved;
+    try {
+      saved = repo.saveAndFlush(inquiry);
+      InquiryHandlingRecord record = new InquiryHandlingRecord();
+      record.inquiry = saved;
+      // EN: No authenticated user yet; keep null rather than fabricate an identity.
+      // 中文：尚无登录用户；保持 null，不伪造身份。
+      record.operatorId = null;
+      record.actionType = actionTypeFor(previousStatus, targetStatus);
+      record.oldValue = statusJson(previousStatus);
+      record.newValue = statusJson(targetStatus);
+      record.note = null;
+      handlingRecords.saveAndFlush(record);
+    } catch (ObjectOptimisticLockingFailureException conflict) {
+      // EN: Another writer committed first; report 409 instead of overwriting its change.
+      // 中文：另一个写入方先提交；返回 409，绝不覆盖它的修改。
+      throw new ResponseStatusException(HttpStatus.CONFLICT, "Inquiry was modified concurrently");
+    }
+
+    log.info(
+        "Inquiry status changed: inquiryId={} from={} to={} action={}",
+        saved.id,
+        previousStatus,
+        targetStatus,
+        actionTypeFor(previousStatus, targetStatus));
+    return new InquiryStatusResponse(
+        saved.id, previousStatus, targetStatus, saved.updatedAt);
+  }
+
+  /**
+   * EN: The action recorded for a transition. Entering RESOLVED/CLOSED maps to RESOLVE/CLOSE;
+   * reopening a CLOSED inquiry maps to REOPEN; all other legal moves are STATUS_CHANGE.
+   * 中文：转换对应的历史动作。进入 RESOLVED/CLOSED 记为 RESOLVE/CLOSE；CLOSED 重新打开记为 REOPEN；其余合法转换为 STATUS_CHANGE。
+   */
+  private static String actionTypeFor(String previousStatus, String targetStatus) {
+    if (STATUS_RESOLVED.equals(targetStatus)) {
+      return "RESOLVE";
+    }
+    if (STATUS_CLOSED.equals(targetStatus)) {
+      return "CLOSE";
+    }
+    if (STATUS_CLOSED.equals(previousStatus)) {
+      return "REOPEN";
+    }
+    return "STATUS_CHANGE";
+  }
+
+  /** EN: JSON snapshot of a status value for old_value/new_value. 中文：状态值的 JSON 快照，用于 old_value/new_value。 */
+  private String statusJson(String status) {
+    try {
+      return objectMapper.writeValueAsString(Map.of("status", status));
+    } catch (JsonProcessingException e) {
+      // EN: A String value cannot fail JSON serialization; this only satisfies checked-exception syntax.
+      // 中文：String 值的 JSON 序列化不会失败；此处仅为满足受检异常语法。
+      throw new IllegalStateException("Cannot serialize status value", e);
     }
   }
 

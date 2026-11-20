@@ -2,9 +2,11 @@ package com.orderai.workbench.controller;
 
 import com.orderai.workbench.api.ApiResponse;
 import com.orderai.workbench.dto.request.InquiryCreateRequest;
+import com.orderai.workbench.dto.request.InquiryStatusUpdateRequest;
 import com.orderai.workbench.dto.request.InquiryUpdateRequest;
 import com.orderai.workbench.dto.response.InquiryManagementResponse;
 import com.orderai.workbench.dto.response.InquiryResponse;
+import com.orderai.workbench.dto.response.InquiryStatusResponse;
 import com.orderai.workbench.entity.Inquiry;
 import com.orderai.workbench.repository.InquiryRepository;
 import com.orderai.workbench.service.InquiryService;
@@ -121,6 +123,16 @@ public class InquiryController {
       inquiry.category = input.category();
     }
     return ApiResponse.success(toView(inquiries.save(inquiry)));
+  }
+
+  /**
+   * EN: Status transition. All rules and history writes live in the service; this method only binds
+   * the request and wraps the result. 中文：状态流转。规则与历史写入都在 Service；此处只绑定请求并包装结果。
+   */
+  @PatchMapping("/{id}/status")
+  public ApiResponse<InquiryStatusResponse> changeStatus(
+      @PathVariable long id, @RequestBody InquiryStatusUpdateRequest input) {
+    return ApiResponse.success(service.changeStatus(id, input.status()));
   }
 
   @DeleteMapping("/{id}")
