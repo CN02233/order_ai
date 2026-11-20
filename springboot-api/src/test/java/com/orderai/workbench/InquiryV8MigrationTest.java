@@ -296,17 +296,28 @@ class InquiryV8MigrationTest {
     assertThat(stringValue("SELECT analysis_source FROM inquiries WHERE id = " + c))
         .isEqualTo("AI");
 
-    // EN: Only rows with evidence get one version=1 analysis row; the AI's ORIGINAL category is used.
-    // 中文：只有存在分析证据的记录才生成一条 version=1 分析历史，且保存 AI 原始分类。
+    // EN: Only rows with evidence get one version=1 analysis row. The migrated analysis category
+    //     comes ONLY from ai_category: A has the AI snapshot (REFUND), C has evidence but no AI
+    //     snapshot, so its migrated category must be NULL -- never the human-editable current
+    //     category. The current business category on the inquiry is untouched for every row.
+    // 中文：只有存在分析证据的记录才生成一条 version=1 分析历史。迁入的分析分类只取 ai_category：
+    //     A 有 AI 快照（REFUND）；C 有分析证据但没有 AI 快照，迁入分类必须为 NULL，绝不取可人工编辑的
+    //     当前分类。每行咨询的当前业务分类保持不变。
     assertThat(count("SELECT COUNT(*) FROM inquiry_analysis")).isEqualTo(2);
     assertThat(count("SELECT COUNT(*) FROM inquiry_analysis WHERE inquiry_id = " + a)).isEqualTo(1);
     assertThat(count("SELECT COUNT(*) FROM inquiry_analysis WHERE inquiry_id = " + b)).isZero();
     assertThat(stringValue("SELECT category FROM inquiry_analysis WHERE inquiry_id = " + a))
         .isEqualTo("REFUND");
     assertThat(stringValue("SELECT category FROM inquiry_analysis WHERE inquiry_id = " + c))
-        .isEqualTo("PRODUCT_INQUIRY");
+        .isNull();
     assertThat(stringValue("SELECT status FROM inquiry_analysis WHERE inquiry_id = " + a))
         .isEqualTo("SUCCESS");
+
+    // EN: The current business category is preserved, independent of the migrated analysis category.
+    //     C keeps PRODUCT_INQUIRY even though its migrated analysis category is NULL.
+    // 中文：当前业务分类原样保留，与迁入的分析分类无关。C 的迁入分析分类为 NULL，但当前分类仍是 PRODUCT_INQUIRY。
+    assertThat(stringValue("SELECT category FROM inquiries WHERE id = " + c))
+        .isEqualTo("PRODUCT_INQUIRY");
 
     // EN: current_analysis_id points at the row created for this inquiry, never at another one.
     // 中文：current_analysis_id 指向本咨询的分析记录，不会指向别的咨询。

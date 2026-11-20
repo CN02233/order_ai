@@ -86,18 +86,20 @@ CREATE INDEX idx_inquiries_analysis_status ON inquiries(analysis_status);
 CREATE INDEX idx_inquiries_updated_at ON inquiries(updated_at);
 
 -- EN: A historical row has analysis evidence if ANY analysis field is populated. Each such row gets
---     exactly one version=1 analysis record. The AI's original category is ai_category when present;
---     pre-V7 rows have no snapshot, so their stored `category` is the only AI result available.
+--     exactly one version=1 analysis record. The migrated AI category is taken ONLY from ai_category:
+--     a row without that AI snapshot gets NULL rather than reusing `category`, because the current
+--     business category may have been edited by a human and is NOT proof of the AI's original result.
 --     priority/analysis_reason/error_message have no historical source and stay NULL.
 -- 中文：任一分析字段非空即视为有分析证据，每张这样的记录生成一条 version=1 的分析历史。
---     AI 原始分类优先取 ai_category；V7 之前无快照，只能用现有 category。
+--     迁入的 AI 分类只取 ai_category：没有该 AI 快照的历史行迁入 NULL，绝不复用现有 category，
+--     因为当前业务分类可能已被人工修改，不能作为 AI 原始结论的证据。
 --     priority/analysis_reason/error_message 无历史来源，保持 NULL。
 INSERT INTO inquiry_analysis
   (inquiry_id, version, category, confidence, needs_human_review, suggested_reply,
    analysis_source, status, created_at, completed_at)
 SELECT i.id,
        1,
-       COALESCE(i.ai_category, i.category),
+       i.ai_category,
        i.confidence,
        i.needs_human_review,
        i.suggested_reply,
