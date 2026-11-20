@@ -10,7 +10,8 @@ import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
-public interface ShipmentRepository extends JpaRepository<Shipment, Long>, JpaSpecificationExecutor<Shipment> {
+public interface ShipmentRepository
+    extends JpaRepository<Shipment, Long>, JpaSpecificationExecutor<Shipment> {
   Optional<Shipment> findByTrackingNumber(String trackingNumber);
 
   boolean existsByTrackingNumber(String trackingNumber);

@@ -21,8 +21,8 @@ import org.springframework.stereotype.Component;
 /**
  * Turns order, shipment and refund rows into read models.
  *
- * <p>Kept in one place so the order detail endpoint, the customer order history and the refund detail
- * endpoint all report the same refundable amount and the same parcel state instead of each
+ * <p>Kept in one place so the order detail endpoint, the customer order history and the refund
+ * detail endpoint all report the same refundable amount and the same parcel state instead of each
  * re-deriving it.
  */
 @Component
@@ -33,8 +33,12 @@ public class OrderViewAssembler {
   private final ShipmentRepository shipments;
   private final ShipmentItemRepository shipmentItems;
 
-  public OrderViewAssembler(OrderItemRepository items, RefundRequestRepository refunds,
-      CustomerRepository customers, ShipmentRepository shipments, ShipmentItemRepository shipmentItems) {
+  public OrderViewAssembler(
+      OrderItemRepository items,
+      RefundRequestRepository refunds,
+      CustomerRepository customers,
+      ShipmentRepository shipments,
+      ShipmentItemRepository shipmentItems) {
     this.items = items;
     this.refunds = refunds;
     this.customers = customers;
@@ -50,9 +54,12 @@ public class OrderViewAssembler {
     BigDecimal pending = amount(order, "PENDING_MANUAL_APPROVAL");
     BigDecimal approved = amount(order, "APPROVED_MANUALLY");
     List<RefundManagementResponse> refundViews =
-        refunds.findAllByOrderNumberOrderByIdDesc(order.orderNumber).stream().map(this::toRefundRow).toList();
+        refunds.findAllByOrderNumberOrderByIdDesc(order.orderNumber).stream()
+            .map(this::toRefundRow)
+            .toList();
     List<Shipment> parcels = shipments.findAllByOrderIdOrderByIdAsc(order.id);
-    List<ShipmentSummaryResponse> shipmentViews = parcels.stream().map(this::toShipmentRow).toList();
+    List<ShipmentSummaryResponse> shipmentViews =
+        parcels.stream().map(this::toShipmentRow).toList();
     return new OrderResponse(
         order.id,
         order.orderNumber,
@@ -105,9 +112,8 @@ public class OrderViewAssembler {
     if (parcels.isEmpty()) {
       return null;
     }
-    List<Shipment> active = parcels.stream()
-        .filter(parcel -> !"CANCELLED".equals(parcel.status))
-        .toList();
+    List<Shipment> active =
+        parcels.stream().filter(parcel -> !"CANCELLED".equals(parcel.status)).toList();
     if (active.isEmpty()) {
       return "CANCELLED";
     }
@@ -122,7 +128,8 @@ public class OrderViewAssembler {
 
   /** Money still available for a new refund request after pending and approved requests. */
   public BigDecimal refundable(OrderEntity order) {
-    return refundable(order, amount(order, "PENDING_MANUAL_APPROVAL"), amount(order, "APPROVED_MANUALLY"));
+    return refundable(
+        order, amount(order, "PENDING_MANUAL_APPROVAL"), amount(order, "APPROVED_MANUALLY"));
   }
 
   public RefundOrderSummary summarize(OrderEntity order) {
@@ -130,7 +137,11 @@ public class OrderViewAssembler {
       return null;
     }
     return new RefundOrderSummary(
-        order.orderNumber, order.status, customerEmail(order.customerId), amount(order.totalAmount), refundable(order));
+        order.orderNumber,
+        order.status,
+        customerEmail(order.customerId),
+        amount(order.totalAmount),
+        refundable(order));
   }
 
   public String customerEmail(Long customerId) {

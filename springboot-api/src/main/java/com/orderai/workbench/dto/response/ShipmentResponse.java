@@ -10,8 +10,8 @@ import java.util.List;
  * Full parcel view: carrier, status dates, which order lines are inside and the tracking timeline.
  *
  * <p>An order can have several parcels, so the order detail exposes {@code shipments} rather than a
- * single tracking number; {@code orders.tracking_number} is kept in sync with the newest parcel only
- * so older screens keep working.
+ * single tracking number; {@code orders.tracking_number} is kept in sync with the newest parcel
+ * only so older screens keep working.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record ShipmentResponse(

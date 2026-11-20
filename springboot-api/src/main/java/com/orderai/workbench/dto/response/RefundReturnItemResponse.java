@@ -8,8 +8,8 @@ import java.time.LocalDateTime;
 /**
  * One requested return line.
  *
- * <p>{@code acceptedQuantity} stays zero until the goods are physically inspected; only the accepted
- * quantity is added back to stock.
+ * <p>{@code acceptedQuantity} stays zero until the goods are physically inspected; only the
+ * accepted quantity is added back to stock.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record RefundReturnItemResponse(

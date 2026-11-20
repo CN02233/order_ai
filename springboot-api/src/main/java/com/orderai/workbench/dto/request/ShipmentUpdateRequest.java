@@ -6,8 +6,8 @@ import java.time.LocalDate;
 /**
  * Updates a parcel. Only non-null fields are applied.
  *
- * <p>{@code location}/{@code description} are optional and, when a status change happens, are stored
- * on the tracking event that the change produces.
+ * <p>{@code location}/{@code description} are optional and, when a status change happens, are
+ * stored on the tracking event that the change produces.
  */
 public record ShipmentUpdateRequest(
     String carrier,

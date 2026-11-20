@@ -10,9 +10,12 @@ import java.time.LocalDateTime;
  * what the warehouse actually counted, and only that number goes back into stock.
  */
 @Entity
-@Table(name = "refund_return_items",
-    uniqueConstraints = @UniqueConstraint(name = "uq_refund_return_line",
-        columnNames = {"refund_request_id", "order_item_id"}))
+@Table(
+    name = "refund_return_items",
+    uniqueConstraints =
+        @UniqueConstraint(
+            name = "uq_refund_return_line",
+            columnNames = {"refund_request_id", "order_item_id"}))
 public class RefundReturnItem {
   @Id
   @GeneratedValue(strategy = GenerationType.IDENTITY)

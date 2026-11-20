@@ -11,8 +11,8 @@ import java.util.List;
 /**
  * Logistics: the parcels that carry an order.
  *
- * <p>Shipping is a fulfilment step, not a stock step — stock was already reserved when the order was
- * created. Every mutation here keeps the order header in sync (status and its display tracking
+ * <p>Shipping is a fulfilment step, not a stock step — stock was already reserved when the order
+ * was created. Every mutation here keeps the order header in sync (status and its display tracking
  * number), because a customer looking at an order expects that summary to be right.
  */
 public interface ShipmentService {

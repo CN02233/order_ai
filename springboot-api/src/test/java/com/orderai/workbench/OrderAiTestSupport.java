@@ -73,7 +73,8 @@ abstract class OrderAiTestSupport {
   }
 
   OrderRequest orderRequest(String number, int quantity) {
-    return new OrderRequest(number, customer.id, null, null, List.of(new OrderItemCreateRequest(SKU, quantity)));
+    return new OrderRequest(
+        number, customer.id, null, null, List.of(new OrderItemCreateRequest(SKU, quantity)));
   }
 
   Product reloaded() {

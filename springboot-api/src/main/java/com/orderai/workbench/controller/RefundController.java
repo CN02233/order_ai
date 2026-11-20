@@ -32,8 +32,8 @@ public class RefundController {
   }
 
   /**
-   * Creates a refund request while honoring the idempotency key, so a retried submission returns the
-   * original record instead of a duplicate.
+   * Creates a refund request while honoring the idempotency key, so a retried submission returns
+   * the original record instead of a duplicate.
    */
   @PostMapping
   public ApiResponse<RefundResponse> create(
@@ -48,12 +48,16 @@ public class RefundController {
       @RequestParam(name = "order_number", required = false) String orderNumber,
       @RequestParam(required = false) String status,
       @RequestParam(name = "created_from", required = false)
-          @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime createdFrom,
+          @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
+          LocalDateTime createdFrom,
       @RequestParam(name = "created_to", required = false)
-          @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime createdTo,
-      @PageableDefault(size = 10, sort = "createdAt", direction = Sort.Direction.DESC) Pageable pageable) {
+          @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
+          LocalDateTime createdTo,
+      @PageableDefault(size = 10, sort = "createdAt", direction = Sort.Direction.DESC)
+          Pageable pageable) {
     if (createdFrom != null && createdTo != null && createdFrom.isAfter(createdTo)) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "created_from must be before created_to");
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, "created_from must be before created_to");
     }
 
     Specification<RefundRequest> spec = (root, query, cb) -> cb.conjunction();
@@ -67,7 +71,9 @@ public class RefundController {
       spec = spec.and((root, query, cb) -> cb.equal(root.get("status"), status));
     }
     if (createdFrom != null) {
-      spec = spec.and((root, query, cb) -> cb.greaterThanOrEqualTo(root.get("createdAt"), createdFrom));
+      spec =
+          spec.and(
+              (root, query, cb) -> cb.greaterThanOrEqualTo(root.get("createdAt"), createdFrom));
     }
     if (createdTo != null) {
       spec = spec.and((root, query, cb) -> cb.lessThanOrEqualTo(root.get("createdAt"), createdTo));
@@ -96,12 +102,14 @@ public class RefundController {
 
   /** Accepts returned goods: only the accepted quantity goes back into stock. */
   @PostMapping("/{id}/receive")
-  public ApiResponse<RefundResponse> receive(@PathVariable long id, @RequestBody RefundReceiveRequest request) {
+  public ApiResponse<RefundResponse> receive(
+      @PathVariable long id, @RequestBody RefundReceiveRequest request) {
     return ApiResponse.success(service.receive(id, request));
   }
 
   @PutMapping("/{id}")
-  public ApiResponse<RefundResponse> update(@PathVariable long id, @RequestBody RefundUpdateRequest payload) {
+  public ApiResponse<RefundResponse> update(
+      @PathVariable long id, @RequestBody RefundUpdateRequest payload) {
     return ApiResponse.success(service.update(id, payload.reason()));
   }
 
@@ -112,7 +120,15 @@ public class RefundController {
   }
 
   private static RefundManagementResponse toView(RefundRequest r) {
-    return new RefundManagementResponse(r.id, r.orderNumber, r.reason, r.status, r.refundType,
-        r.amount, r.inventoryReceived, r.createdAt, r.reviewedAt);
+    return new RefundManagementResponse(
+        r.id,
+        r.orderNumber,
+        r.reason,
+        r.status,
+        r.refundType,
+        r.amount,
+        r.inventoryReceived,
+        r.createdAt,
+        r.reviewedAt);
   }
 }

@@ -39,28 +39,40 @@ public class InquiryController {
       @RequestParam(required = false) String subject,
       @RequestParam(required = false) String category,
       @RequestParam(name = "created_from", required = false)
-          @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime createdFrom,
+          @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
+          LocalDateTime createdFrom,
       @RequestParam(name = "created_to", required = false)
-          @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime createdTo,
-      @PageableDefault(size = 10, sort = "createdAt", direction = Sort.Direction.DESC) Pageable pageable) {
+          @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
+          LocalDateTime createdTo,
+      @PageableDefault(size = 10, sort = "createdAt", direction = Sort.Direction.DESC)
+          Pageable pageable) {
     if (createdFrom != null && createdTo != null && createdFrom.isAfter(createdTo)) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "created_from must be before created_to");
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, "created_from must be before created_to");
     }
 
     Specification<Inquiry> spec = (root, query, cb) -> cb.conjunction();
     if (customerEmail != null && !customerEmail.isBlank()) {
-      spec = spec.and((root, query, cb) -> cb.like(cb.lower(root.get("customerEmail")),
-          "%" + customerEmail.toLowerCase() + "%"));
+      spec =
+          spec.and(
+              (root, query, cb) ->
+                  cb.like(
+                      cb.lower(root.get("customerEmail")),
+                      "%" + customerEmail.toLowerCase() + "%"));
     }
     if (subject != null && !subject.isBlank()) {
-      spec = spec.and((root, query, cb) -> cb.like(cb.lower(root.get("subject")),
-          "%" + subject.toLowerCase() + "%"));
+      spec =
+          spec.and(
+              (root, query, cb) ->
+                  cb.like(cb.lower(root.get("subject")), "%" + subject.toLowerCase() + "%"));
     }
     if (category != null && !category.isBlank()) {
       spec = spec.and((root, query, cb) -> cb.equal(root.get("category"), category));
     }
     if (createdFrom != null) {
-      spec = spec.and((root, query, cb) -> cb.greaterThanOrEqualTo(root.get("createdAt"), createdFrom));
+      spec =
+          spec.and(
+              (root, query, cb) -> cb.greaterThanOrEqualTo(root.get("createdAt"), createdFrom));
     }
     if (createdTo != null) {
       spec = spec.and((root, query, cb) -> cb.lessThanOrEqualTo(root.get("createdAt"), createdTo));
@@ -75,22 +87,27 @@ public class InquiryController {
    */
   @GetMapping("/{id}")
   public ApiResponse<InquiryManagementResponse> detail(@PathVariable long id) {
-    Inquiry inquiry = inquiries.findById(id)
-        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Inquiry not found"));
+    Inquiry inquiry =
+        inquiries
+            .findById(id)
+            .orElseThrow(
+                () -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Inquiry not found"));
     return ApiResponse.success(toView(inquiry));
   }
 
   /**
    * EN: Partial update of business fields only. The request DTO deliberately has no AI analysis
-   *     fields, so ai_category and the analysis snapshot can never be changed here.
-   * 中文：只做业务字段的部分更新。请求 DTO 刻意不含 AI 分析字段，因此此处永远无法修改
-   *     ai_category 与分析快照。
+   * fields, so ai_category and the analysis snapshot can never be changed here. 中文：只做业务字段的部分更新。请求
+   * DTO 刻意不含 AI 分析字段，因此此处永远无法修改 ai_category 与分析快照。
    */
   @PutMapping("/{id}")
-  public ApiResponse<InquiryManagementResponse> update(@PathVariable long id,
-      @RequestBody InquiryUpdateRequest input) {
-    Inquiry inquiry = inquiries.findById(id)
-        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Inquiry not found"));
+  public ApiResponse<InquiryManagementResponse> update(
+      @PathVariable long id, @RequestBody InquiryUpdateRequest input) {
+    Inquiry inquiry =
+        inquiries
+            .findById(id)
+            .orElseThrow(
+                () -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Inquiry not found"));
     if (input.customerEmail() != null) {
       inquiry.customerEmail = input.customerEmail();
     }
@@ -108,8 +125,11 @@ public class InquiryController {
 
   @DeleteMapping("/{id}")
   public ApiResponse<Void> delete(@PathVariable long id) {
-    Inquiry inquiry = inquiries.findById(id)
-        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Inquiry not found"));
+    Inquiry inquiry =
+        inquiries
+            .findById(id)
+            .orElseThrow(
+                () -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Inquiry not found"));
     inquiries.delete(inquiry);
     return ApiResponse.success(null);
   }

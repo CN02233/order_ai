@@ -26,7 +26,8 @@ public class CustomerController {
 
   /** Lists customers for selection in related order forms. */
   @GetMapping
-  public ApiResponse<List<CustomerResponse>> list(@RequestParam(name = "limit", defaultValue = "200") int limit) {
+  public ApiResponse<List<CustomerResponse>> list(
+      @RequestParam(name = "limit", defaultValue = "200") int limit) {
     return ApiResponse.success(service.list(limit));
   }
 

@@ -8,8 +8,8 @@ import org.hibernate.annotations.CreationTimestamp;
  * Append-only record of one stock change.
  *
  * <p>Rows are only written by {@code InventoryServiceImpl}, in the same transaction as the stock
- * update it describes, so the ledger always explains why a product's stock differs from its
- * opening balance.
+ * update it describes, so the ledger always explains why a product's stock differs from its opening
+ * balance.
  */
 @Entity
 @Table(name = "stock_movements")

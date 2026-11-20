@@ -19,11 +19,12 @@ public interface OrderItemRepository extends JpaRepository<OrderItem, Long> {
   long countByProductId(Long productId);
 
   /**
-   * Reference counts for a whole page of products in one query, so the inventory list can disable the
-   * delete button without an N+1 lookup.
+   * Reference counts for a whole page of products in one query, so the inventory list can disable
+   * the delete button without an N+1 lookup.
    */
-  @Query("select i.productId, count(i) from OrderItem i where i.productId in :productIds "
-      + "group by i.productId")
+  @Query(
+      "select i.productId, count(i) from OrderItem i where i.productId in :productIds "
+          + "group by i.productId")
   List<Object[]> countByProductIdIn(@Param("productIds") List<Long> productIds);
 
   /** Total units ordered, used to decide whether every unit of an order is on its way. */
@@ -32,5 +33,6 @@ public interface OrderItemRepository extends JpaRepository<OrderItem, Long> {
 
   /** Powers "which orders bought this product" on the inventory page. */
   @Query("select i from OrderItem i where i.productId=:productId order by i.id desc")
-  List<OrderItem> findByProductIdOrderByIdDesc(@Param("productId") Long productId, Pageable pageable);
+  List<OrderItem> findByProductIdOrderByIdDesc(
+      @Param("productId") Long productId, Pageable pageable);
 }

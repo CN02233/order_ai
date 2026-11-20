@@ -10,7 +10,8 @@ import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
-public interface OrderRepository extends JpaRepository<OrderEntity, Long>, JpaSpecificationExecutor<OrderEntity> {
+public interface OrderRepository
+    extends JpaRepository<OrderEntity, Long>, JpaSpecificationExecutor<OrderEntity> {
   Optional<OrderEntity> findByOrderNumber(String orderNumber);
 
   @Lock(LockModeType.PESSIMISTIC_WRITE)

@@ -12,7 +12,9 @@ import java.util.List;
  * non-negative guarantee and the movement ledger stay consistent inside one transaction.
  */
 public interface InventoryService {
-  /** Locks the product by SKU, checks availability, decrements stock and records a SALE movement. */
+  /**
+   * Locks the product by SKU, checks availability, decrements stock and records a SALE movement.
+   */
   Product reserve(String sku, int quantity, String orderNumber);
 
   /** Returns reserved stock to the catalogue when an order is cancelled. */

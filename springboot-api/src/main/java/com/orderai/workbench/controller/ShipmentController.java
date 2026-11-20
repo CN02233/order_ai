@@ -45,30 +45,44 @@ public class ShipmentController {
       @RequestParam(required = false) String tracking_number,
       @RequestParam(required = false) String carrier,
       @RequestParam(required = false) String status,
-      @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime created_from,
-      @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime created_to,
-      @PageableDefault(size = 10, sort = "createdAt", direction = Sort.Direction.DESC) Pageable pageable) {
+      @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
+          LocalDateTime created_from,
+      @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
+          LocalDateTime created_to,
+      @PageableDefault(size = 10, sort = "createdAt", direction = Sort.Direction.DESC)
+          Pageable pageable) {
     if (created_from != null && created_to != null && created_from.isAfter(created_to)) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "created_from must be before created_to");
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, "created_from must be before created_to");
     }
     Specification<Shipment> spec = (root, query, cb) -> cb.conjunction();
     if (order_number != null && !order_number.isBlank()) {
-      spec = spec.and((root, query, cb) ->
-          cb.like(cb.lower(root.get("orderNumber")), order_number.toLowerCase() + "%"));
+      spec =
+          spec.and(
+              (root, query, cb) ->
+                  cb.like(cb.lower(root.get("orderNumber")), order_number.toLowerCase() + "%"));
     }
     if (tracking_number != null && !tracking_number.isBlank()) {
-      spec = spec.and((root, query, cb) ->
-          cb.like(cb.lower(root.get("trackingNumber")), "%" + tracking_number.toLowerCase() + "%"));
+      spec =
+          spec.and(
+              (root, query, cb) ->
+                  cb.like(
+                      cb.lower(root.get("trackingNumber")),
+                      "%" + tracking_number.toLowerCase() + "%"));
     }
     if (carrier != null && !carrier.isBlank()) {
-      spec = spec.and((root, query, cb) ->
-          cb.like(cb.lower(root.get("carrier")), "%" + carrier.toLowerCase() + "%"));
+      spec =
+          spec.and(
+              (root, query, cb) ->
+                  cb.like(cb.lower(root.get("carrier")), "%" + carrier.toLowerCase() + "%"));
     }
     if (status != null && !status.isBlank()) {
       spec = spec.and((root, query, cb) -> cb.equal(root.get("status"), status));
     }
     if (created_from != null) {
-      spec = spec.and((root, query, cb) -> cb.greaterThanOrEqualTo(root.get("createdAt"), created_from));
+      spec =
+          spec.and(
+              (root, query, cb) -> cb.greaterThanOrEqualTo(root.get("createdAt"), created_from));
     }
     if (created_to != null) {
       spec = spec.and((root, query, cb) -> cb.lessThanOrEqualTo(root.get("createdAt"), created_to));
@@ -87,13 +101,15 @@ public class ShipmentController {
   }
 
   @PutMapping("/{id}")
-  public ApiResponse<ShipmentResponse> update(@PathVariable Long id, @RequestBody ShipmentUpdateRequest request) {
+  public ApiResponse<ShipmentResponse> update(
+      @PathVariable Long id, @RequestBody ShipmentUpdateRequest request) {
     return ApiResponse.success(service.update(id, request));
   }
 
   /** Appends one scan without necessarily changing the parcel status. */
   @PostMapping("/{id}/events")
-  public ApiResponse<ShipmentResponse> addEvent(@PathVariable Long id, @RequestBody ShipmentEventRequest request) {
+  public ApiResponse<ShipmentResponse> addEvent(
+      @PathVariable Long id, @RequestBody ShipmentEventRequest request) {
     return ApiResponse.success(service.addEvent(id, request));
   }
 

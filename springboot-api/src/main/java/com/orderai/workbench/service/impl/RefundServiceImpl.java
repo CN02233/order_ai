@@ -44,8 +44,13 @@ public class RefundServiceImpl implements RefundService {
   private final InventoryService inventory;
   private final OrderViewAssembler views;
 
-  public RefundServiceImpl(RefundRequestRepository refunds, OrderRepository orders, OrderItemRepository orderItems,
-      RefundReturnItemRepository returnItems, InventoryService inventory, OrderViewAssembler views) {
+  public RefundServiceImpl(
+      RefundRequestRepository refunds,
+      OrderRepository orders,
+      OrderItemRepository orderItems,
+      RefundReturnItemRepository returnItems,
+      InventoryService inventory,
+      OrderViewAssembler views) {
     this.refunds = refunds;
     this.orders = orders;
     this.orderItems = orderItems;
@@ -62,10 +67,14 @@ public class RefundServiceImpl implements RefundService {
       return response(previous, true);
     }
 
-    if (request.orderNumber() == null || request.orderNumber().isBlank() || request.reason() == null
-        || request.reason().isBlank() || request.amount() == null || request.amount().signum() <= 0) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-          "order_number, reason and positive amount are required");
+    if (request.orderNumber() == null
+        || request.orderNumber().isBlank()
+        || request.reason() == null
+        || request.reason().isBlank()
+        || request.amount() == null
+        || request.amount().signum() <= 0) {
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, "order_number, reason and positive amount are required");
     }
     String type = request.refundType() == null ? REFUND_ONLY : request.refundType();
     if (!Set.of(REFUND_ONLY, RETURN_AND_REFUND).contains(type)) {
@@ -74,44 +83,64 @@ public class RefundServiceImpl implements RefundService {
 
     // Locking the order serialises concurrent requests for the same order, so two requests cannot
     // both consume the last refundable cent.
-    OrderEntity order = orders.findByOrderNumberForUpdate(request.orderNumber().trim())
-        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Order not found"));
+    OrderEntity order =
+        orders
+            .findByOrderNumberForUpdate(request.orderNumber().trim())
+            .orElseThrow(
+                () -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Order not found"));
     if (!REFUNDABLE_ORDER_STATUSES.contains(order.status)) {
-      throw new ResponseStatusException(HttpStatus.CONFLICT,
-          "Only processing, shipped or delivered orders can be refunded");
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT, "Only processing, shipped or delivered orders can be refunded");
     }
     BigDecimal refundable = views.refundable(order);
     if (request.amount().compareTo(refundable) > 0) {
-      throw new ResponseStatusException(HttpStatus.CONFLICT,
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT,
           "Refund amount exceeds the remaining refundable amount of " + refundable);
     }
 
-    List<RefundReturnLineRequest> lines = request.returnItems() == null ? List.of() : request.returnItems();
+    List<RefundReturnLineRequest> lines =
+        request.returnItems() == null ? List.of() : request.returnItems();
     if (RETURN_AND_REFUND.equals(type) && lines.isEmpty()) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Return items are required for return_and_refund");
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, "Return items are required for return_and_refund");
     }
     if (REFUND_ONLY.equals(type) && !lines.isEmpty()) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Return items are only valid for return_and_refund");
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, "Return items are only valid for return_and_refund");
     }
 
-    RefundRequest refund = refunds.saveAndFlush(new RefundRequest(key, order.orderNumber,
-        request.reason().trim(), request.amount(), type));
+    RefundRequest refund =
+        refunds.saveAndFlush(
+            new RefundRequest(
+                key, order.orderNumber, request.reason().trim(), request.amount(), type));
 
     Set<Long> seen = new HashSet<>();
     for (RefundReturnLineRequest line : lines) {
-      if (line.orderItemId() == null || line.quantity() == null || line.quantity() <= 0
+      if (line.orderItemId() == null
+          || line.quantity() == null
+          || line.quantity() <= 0
           || !seen.add(line.orderItemId())) {
-        throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+        throw new ResponseStatusException(
+            HttpStatus.BAD_REQUEST,
             "Return lines require unique order_item_id values and positive quantities");
       }
-      OrderItem item = orderItems.findByIdAndOrderId(line.orderItemId(), order.id)
-          .orElseThrow(() -> new ResponseStatusException(HttpStatus.BAD_REQUEST,
-              "Return item does not belong to this order"));
-      long alreadyRequested = Optional.ofNullable(
-          returnItems.sumRequestedByOrderItemExcludingRefund(item.id, refund.id)).orElse(0L);
+      OrderItem item =
+          orderItems
+              .findByIdAndOrderId(line.orderItemId(), order.id)
+              .orElseThrow(
+                  () ->
+                      new ResponseStatusException(
+                          HttpStatus.BAD_REQUEST, "Return item does not belong to this order"));
+      long alreadyRequested =
+          Optional.ofNullable(
+                  returnItems.sumRequestedByOrderItemExcludingRefund(item.id, refund.id))
+              .orElse(0L);
       if (line.quantity() + alreadyRequested > item.quantity) {
-        throw new ResponseStatusException(HttpStatus.CONFLICT,
-            "Return quantity exceeds the " + (item.quantity - alreadyRequested)
+        throw new ResponseStatusException(
+            HttpStatus.CONFLICT,
+            "Return quantity exceeds the "
+                + (item.quantity - alreadyRequested)
                 + " unit(s) still returnable for this line");
       }
       RefundReturnItem returnItem = new RefundReturnItem();
@@ -126,8 +155,12 @@ public class RefundServiceImpl implements RefundService {
   @Override
   @Transactional(readOnly = true)
   public RefundResponse find(long id) {
-    return response(refunds.findById(id)
-        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Refund not found")), null);
+    return response(
+        refunds
+            .findById(id)
+            .orElseThrow(
+                () -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Refund not found")),
+        null);
   }
 
   @Override
@@ -151,40 +184,52 @@ public class RefundServiceImpl implements RefundService {
   @Override
   @Transactional
   public RefundResponse receive(long id, RefundReceiveRequest request) {
-    RefundRequest refund = refunds.findByIdForUpdate(id)
-        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Refund not found"));
+    RefundRequest refund =
+        refunds
+            .findByIdForUpdate(id)
+            .orElseThrow(
+                () -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Refund not found"));
     if (!APPROVED.equals(refund.status) || !RETURN_AND_REFUND.equals(refund.refundType)) {
-      throw new ResponseStatusException(HttpStatus.CONFLICT,
-          "Only approved return-and-refund requests can receive inventory");
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT, "Only approved return-and-refund requests can receive inventory");
     }
     if (refund.inventoryReceived) {
-      throw new ResponseStatusException(HttpStatus.CONFLICT, "Returned inventory was already received");
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT, "Returned inventory was already received");
     }
     if (request == null || request.items() == null) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Accepted return quantities are required");
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, "Accepted return quantities are required");
     }
 
     Map<Long, Integer> accepted = new HashMap<>();
     for (RefundReceiveLineRequest line : request.items()) {
-      if (line.orderItemId() == null || line.acceptedQuantity() == null || line.acceptedQuantity() < 0
+      if (line.orderItemId() == null
+          || line.acceptedQuantity() == null
+          || line.acceptedQuantity() < 0
           || accepted.put(line.orderItemId(), line.acceptedQuantity()) != null) {
-        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Accepted return lines are invalid");
+        throw new ResponseStatusException(
+            HttpStatus.BAD_REQUEST, "Accepted return lines are invalid");
       }
     }
 
     List<RefundReturnItem> lines = returnItems.findAllByRefundRequestId(refund.id);
     if (lines.size() != accepted.size()) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-          "Provide an accepted quantity for every requested return item");
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, "Provide an accepted quantity for every requested return item");
     }
     for (RefundReturnItem line : lines) {
       Integer count = accepted.get(line.orderItemId);
       if (count == null || count > line.quantity) {
-        throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+        throw new ResponseStatusException(
+            HttpStatus.BAD_REQUEST,
             "Accepted quantity must be between zero and the requested quantity");
       }
-      OrderItem orderItem = orderItems.findById(line.orderItemId)
-          .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT, "Order item not found"));
+      OrderItem orderItem =
+          orderItems
+              .findById(line.orderItemId)
+              .orElseThrow(
+                  () -> new ResponseStatusException(HttpStatus.CONFLICT, "Order item not found"));
       // Only inspected goods re-enter stock, and they re-enter it here — not on approval.
       if (count > 0) {
         inventory.receiveReturn(orderItem.productId, count, "REFUND-" + refund.id);
@@ -211,18 +256,25 @@ public class RefundServiceImpl implements RefundService {
   @Override
   @Transactional
   public void delete(long id) {
-    RefundRequest refund = refunds.findByIdForUpdate(id)
-        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Refund not found"));
+    RefundRequest refund =
+        refunds
+            .findByIdForUpdate(id)
+            .orElseThrow(
+                () -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Refund not found"));
     if (!PENDING.equals(refund.status)) {
-      throw new ResponseStatusException(HttpStatus.CONFLICT, "Processed refunds are retained for audit");
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT, "Processed refunds are retained for audit");
     }
     returnItems.deleteAll(returnItems.findAllByRefundRequestId(id));
     refunds.delete(refund);
   }
 
   private RefundRequest pendingForUpdate(long id) {
-    RefundRequest refund = refunds.findByIdForUpdate(id)
-        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Refund not found"));
+    RefundRequest refund =
+        refunds
+            .findByIdForUpdate(id)
+            .orElseThrow(
+                () -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Refund not found"));
     if (!PENDING.equals(refund.status)) {
       throw new ResponseStatusException(HttpStatus.CONFLICT, "Refund already processed");
     }
@@ -248,7 +300,8 @@ public class RefundServiceImpl implements RefundService {
 
   private RefundReturnItemResponse toReturnLine(RefundReturnItem line) {
     OrderItem item = orderItems.findById(line.orderItemId).orElse(null);
-    BigDecimal unitPrice = item == null || item.unitPrice == null ? BigDecimal.ZERO : item.unitPrice;
+    BigDecimal unitPrice =
+        item == null || item.unitPrice == null ? BigDecimal.ZERO : item.unitPrice;
     return new RefundReturnItemResponse(
         line.orderItemId,
         item == null ? null : item.skuSnapshot,

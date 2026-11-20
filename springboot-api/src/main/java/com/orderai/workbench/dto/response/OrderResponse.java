@@ -31,4 +31,3 @@ public record OrderResponse(
     List<OrderItemResponse> items,
     List<ShipmentSummaryResponse> shipments,
     List<RefundManagementResponse> refunds) {}
-

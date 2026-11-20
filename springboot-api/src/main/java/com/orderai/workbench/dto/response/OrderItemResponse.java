@@ -9,8 +9,8 @@ import java.math.BigDecimal;
  * <p>{@code unitPrice} is the price captured when the order was created; it is intentionally not
  * joined back to the product row so later price changes never rewrite history.
  *
- * <p>{@code shippedQuantity} is the units already handed to a carrier in non-cancelled parcels, so a
- * client can show what is still available to ship without guessing.
+ * <p>{@code shippedQuantity} is the units already handed to a carrier in non-cancelled parcels, so
+ * a client can show what is still available to ship without guessing.
  */
 public record OrderItemResponse(
     Long id,

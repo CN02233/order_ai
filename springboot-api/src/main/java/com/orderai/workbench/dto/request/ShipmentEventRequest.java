@@ -6,8 +6,8 @@ import java.time.LocalDateTime;
 /**
  * Adds one scan to a parcel's timeline.
  *
- * <p>{@code status} is optional; when it is present and differs from the current status it is applied
- * with the same transition rules as an update, so a scan can move the parcel forward.
+ * <p>{@code status} is optional; when it is present and differs from the current status it is
+ * applied with the same transition rules as an update, so a scan can move the parcel forward.
  */
 public record ShipmentEventRequest(
     String status,

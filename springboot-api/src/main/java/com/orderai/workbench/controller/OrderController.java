@@ -42,19 +42,25 @@ public class OrderController {
       @RequestParam(name = "customer_id", required = false) Long customerId,
       @RequestParam(required = false) String status,
       @RequestParam(name = "created_from", required = false)
-          @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime createdFrom,
+          @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
+          LocalDateTime createdFrom,
       @RequestParam(name = "created_to", required = false)
-          @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime createdTo,
-      @PageableDefault(size = 10, sort = "createdAt", direction = Sort.Direction.DESC) Pageable pageable) {
+          @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
+          LocalDateTime createdTo,
+      @PageableDefault(size = 10, sort = "createdAt", direction = Sort.Direction.DESC)
+          Pageable pageable) {
     if (createdFrom != null && createdTo != null && createdFrom.isAfter(createdTo)) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "created_from must be before created_to");
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, "created_from must be before created_to");
     }
 
     Specification<OrderEntity> spec = (root, query, cb) -> cb.conjunction();
     if (orderNumber != null && !orderNumber.isBlank()) {
       // Prefix match: operators usually paste the head of an order number.
-      spec = spec.and((root, query, cb) -> cb.like(cb.lower(root.get("orderNumber")),
-          orderNumber.toLowerCase() + "%"));
+      spec =
+          spec.and(
+              (root, query, cb) ->
+                  cb.like(cb.lower(root.get("orderNumber")), orderNumber.toLowerCase() + "%"));
     }
     if (customerId != null) {
       spec = spec.and((root, query, cb) -> cb.equal(root.get("customerId"), customerId));
@@ -63,7 +69,9 @@ public class OrderController {
       spec = spec.and((root, query, cb) -> cb.equal(root.get("status"), status));
     }
     if (createdFrom != null) {
-      spec = spec.and((root, query, cb) -> cb.greaterThanOrEqualTo(root.get("createdAt"), createdFrom));
+      spec =
+          spec.and(
+              (root, query, cb) -> cb.greaterThanOrEqualTo(root.get("createdAt"), createdFrom));
     }
     if (createdTo != null) {
       spec = spec.and((root, query, cb) -> cb.lessThanOrEqualTo(root.get("createdAt"), createdTo));
@@ -78,8 +86,8 @@ public class OrderController {
   }
 
   @PutMapping("/{number}")
-  public ApiResponse<OrderManagementResponse> update(@PathVariable String number,
-      @RequestBody OrderUpdateRequest input) {
+  public ApiResponse<OrderManagementResponse> update(
+      @PathVariable String number, @RequestBody OrderUpdateRequest input) {
     return ApiResponse.success(service.update(number, input));
   }
 
@@ -105,7 +113,7 @@ public class OrderController {
   }
 
   private static OrderManagementResponse toView(OrderEntity o) {
-    return new OrderManagementResponse(o.id, o.orderNumber, o.customerId, o.status, o.trackingNumber,
-        o.createdAt, o.totalAmount);
+    return new OrderManagementResponse(
+        o.id, o.orderNumber, o.customerId, o.status, o.trackingNumber, o.createdAt, o.totalAmount);
   }
 }

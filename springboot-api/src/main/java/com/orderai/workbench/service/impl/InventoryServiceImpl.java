@@ -31,12 +31,18 @@ public class InventoryServiceImpl implements InventoryService {
   @Transactional
   public Product reserve(String sku, int quantity, String orderNumber) {
     if (quantity <= 0) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Reserved quantity must be positive");
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, "Reserved quantity must be positive");
     }
-    Product product = products.findBySkuForUpdate(sku)
-        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Product not found: " + sku));
+    Product product =
+        products
+            .findBySkuForUpdate(sku)
+            .orElseThrow(
+                () ->
+                    new ResponseStatusException(HttpStatus.NOT_FOUND, "Product not found: " + sku));
     if (product.stock < quantity) {
-      throw new ResponseStatusException(HttpStatus.CONFLICT, "Insufficient stock for SKU " + product.sku);
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT, "Insufficient stock for SKU " + product.sku);
     }
     apply(product, -quantity, SALE, orderNumber, "Order reservation");
     return product;
@@ -66,13 +72,19 @@ public class InventoryServiceImpl implements InventoryService {
   @Transactional
   public StockMovement adjust(String sku, int delta, String note) {
     if (delta == 0) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Adjustment delta must not be zero");
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, "Adjustment delta must not be zero");
     }
     if (note == null || note.isBlank()) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "A reason is required for manual stock adjustments");
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, "A reason is required for manual stock adjustments");
     }
-    Product product = products.findBySkuForUpdate(sku)
-        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Product not found: " + sku));
+    Product product =
+        products
+            .findBySkuForUpdate(sku)
+            .orElseThrow(
+                () ->
+                    new ResponseStatusException(HttpStatus.NOT_FOUND, "Product not found: " + sku));
     return apply(product, delta, ADJUSTMENT, null, note.trim());
   }
 
@@ -84,17 +96,21 @@ public class InventoryServiceImpl implements InventoryService {
   }
 
   private Product lockById(Long productId) {
-    return products.findByIdForUpdate(productId)
-        .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT,
-            "Product no longer exists for this order line"));
+    return products
+        .findByIdForUpdate(productId)
+        .orElseThrow(
+            () ->
+                new ResponseStatusException(
+                    HttpStatus.CONFLICT, "Product no longer exists for this order line"));
   }
 
   /** Applies the delta, refuses negative stock and records the ledger row. */
-  private StockMovement apply(Product product, int delta, String type, String reference, String note) {
+  private StockMovement apply(
+      Product product, int delta, String type, String reference, String note) {
     int balance = product.stock + delta;
     if (balance < 0) {
-      throw new ResponseStatusException(HttpStatus.CONFLICT,
-          "Stock for SKU " + product.sku + " cannot become negative");
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT, "Stock for SKU " + product.sku + " cannot become negative");
     }
     product.stock = balance;
     products.save(product);

@@ -5,9 +5,8 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 
 /**
  * EN: Complete result of classifying and saving an inquiry, also returned on idempotency replay.
- *     suggested_reply is nullable; error_message is internal and never exposed here.
- * 中文：咨询分类与保存的完整结果，幂等重放时同样返回此结构。
- *     suggested_reply 可空；error_message 属于内部信息，绝不在此暴露。
+ * suggested_reply is nullable; error_message is internal and never exposed here.
+ * 中文：咨询分类与保存的完整结果，幂等重放时同样返回此结构。 suggested_reply 可空；error_message 属于内部信息，绝不在此暴露。
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record InquiryResponse(

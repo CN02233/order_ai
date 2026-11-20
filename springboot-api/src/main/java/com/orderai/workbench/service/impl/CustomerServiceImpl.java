@@ -25,7 +25,8 @@ public class CustomerServiceImpl implements CustomerService {
   private final OrderRepository orders;
   private final OrderViewAssembler views;
 
-  public CustomerServiceImpl(CustomerRepository customers, OrderRepository orders, OrderViewAssembler views) {
+  public CustomerServiceImpl(
+      CustomerRepository customers, OrderRepository orders, OrderViewAssembler views) {
     this.customers = customers;
     this.orders = orders;
     this.views = views;
@@ -52,15 +53,15 @@ public class CustomerServiceImpl implements CustomerService {
   @Override
   public List<CustomerResponse> list(int limit) {
     int size = Math.max(1, Math.min(limit, 500));
-    return customers.findAll(PageRequest.of(0, size, Sort.by("id")))
-        .stream()
+    return customers.findAll(PageRequest.of(0, size, Sort.by("id"))).stream()
         .map(customer -> new CustomerResponse(customer.id, customer.email, customer.name))
         .toList();
   }
 
   @Override
   public Optional<CustomerResponse> find(String email) {
-    return customers.findByEmailIgnoreCase(email.trim())
+    return customers
+        .findByEmailIgnoreCase(email.trim())
         .map(customer -> new CustomerResponse(customer.id, customer.email, customer.name));
   }
 
@@ -78,14 +79,21 @@ public class CustomerServiceImpl implements CustomerService {
             .toList());
   }
 
-  /** Deletes a customer that never ordered; an order must keep its customer so its history stays intact. */
+  /**
+   * Deletes a customer that never ordered; an order must keep its customer so its history stays
+   * intact.
+   */
   @Override
   @Transactional
   public void delete(Long id) {
-    Customer customer = customers.findById(id)
-        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Customer not found"));
+    Customer customer =
+        customers
+            .findById(id)
+            .orElseThrow(
+                () -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Customer not found"));
     if (orders.existsByCustomerId(id)) {
-      throw new ResponseStatusException(HttpStatus.CONFLICT,
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT,
           "Customers with orders cannot be deleted; delete those orders first");
     }
     customers.delete(customer);

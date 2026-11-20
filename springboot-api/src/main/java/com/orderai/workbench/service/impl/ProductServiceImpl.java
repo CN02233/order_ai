@@ -28,7 +28,10 @@ public class ProductServiceImpl implements ProductService {
   private final OrderRepository orders;
   private final InventoryService inventory;
 
-  public ProductServiceImpl(ProductRepository repo, OrderItemRepository orderItems, OrderRepository orders,
+  public ProductServiceImpl(
+      ProductRepository repo,
+      OrderItemRepository orderItems,
+      OrderRepository orders,
       InventoryService inventory) {
     this.repo = repo;
     this.orderItems = orderItems;
@@ -39,42 +42,60 @@ public class ProductServiceImpl implements ProductService {
   @Override
   @Transactional(readOnly = true)
   public ProductResponse find(String sku) {
-    Product p = repo.findBySku(sku)
-        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Product not found"));
+    Product p =
+        repo.findBySku(sku)
+            .orElseThrow(
+                () -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Product not found"));
     return new ProductResponse(p.id, p.sku, p.name, p.stock, p.price);
   }
 
   @Override
   @Transactional(readOnly = true)
   public List<ProductOrderReferenceResponse> orders(String sku, int limit) {
-    Product product = repo.findBySku(sku)
-        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Product not found"));
-    List<OrderItem> lines = orderItems.findByProductIdOrderByIdDesc(product.id, PageRequest.of(0, clamp(limit)));
-    Map<Long, OrderEntity> byId = orders.findAllById(lines.stream().map(line -> line.orderId).toList()).stream()
-        .collect(Collectors.toMap(order -> order.id, Function.identity()));
+    Product product =
+        repo.findBySku(sku)
+            .orElseThrow(
+                () -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Product not found"));
+    List<OrderItem> lines =
+        orderItems.findByProductIdOrderByIdDesc(product.id, PageRequest.of(0, clamp(limit)));
+    Map<Long, OrderEntity> byId =
+        orders.findAllById(lines.stream().map(line -> line.orderId).toList()).stream()
+            .collect(Collectors.toMap(order -> order.id, Function.identity()));
     return lines.stream()
-        .map(line -> {
-          OrderEntity order = byId.get(line.orderId);
-          return new ProductOrderReferenceResponse(
-              line.id,
-              order == null ? null : order.orderNumber,
-              order == null ? null : order.status,
-              order == null ? null : order.customerId,
-              line.quantity,
-              line.unitPrice,
-              order == null ? null : order.createdAt);
-        })
+        .map(
+            line -> {
+              OrderEntity order = byId.get(line.orderId);
+              return new ProductOrderReferenceResponse(
+                  line.id,
+                  order == null ? null : order.orderNumber,
+                  order == null ? null : order.status,
+                  order == null ? null : order.customerId,
+                  line.quantity,
+                  line.unitPrice,
+                  order == null ? null : order.createdAt);
+            })
         .toList();
   }
 
   @Override
   @Transactional(readOnly = true)
   public List<StockMovementResponse> movements(String sku, int limit) {
-    Product product = repo.findBySku(sku)
-        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Product not found"));
+    Product product =
+        repo.findBySku(sku)
+            .orElseThrow(
+                () -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Product not found"));
     return inventory.recentMovements(product.id, limit).stream()
-        .map(m -> new StockMovementResponse(m.id, m.skuSnapshot, m.delta, m.balanceAfter, m.movementType,
-            m.reference, m.note, m.createdAt))
+        .map(
+            m ->
+                new StockMovementResponse(
+                    m.id,
+                    m.skuSnapshot,
+                    m.delta,
+                    m.balanceAfter,
+                    m.movementType,
+                    m.reference,
+                    m.note,
+                    m.createdAt))
         .toList();
   }
 

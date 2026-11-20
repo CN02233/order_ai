@@ -55,11 +55,10 @@ import org.springframework.web.client.RestClient;
 import org.springframework.web.server.ResponseStatusException;
 
 /**
- * EN: Integration tests for the Spring Boot -> Python boundary using an in-JVM HTTP stub.
- * No real Python service or network is required; every scenario is controlled locally.
+ * EN: Integration tests for the Spring Boot -> Python boundary using an in-JVM HTTP stub. No real
+ * Python service or network is required; every scenario is controlled locally.
  *
- * 中文：使用 JVM 内 HTTP 桩服务测试 Spring Boot -> Python 边界。
- * 不需要真实 Python 服务或外网；每个场景都在本地精确控制。
+ * <p>中文：使用 JVM 内 HTTP 桩服务测试 Spring Boot -> Python 边界。 不需要真实 Python 服务或外网；每个场景都在本地精确控制。
  */
 class InquiryAiIntegrationTest {
   private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -82,11 +81,13 @@ class InquiryAiIntegrationTest {
     // 中文：Mock repository：不返回幂等重放，保存时分配 id。
     repo = mock(InquiryRepository.class);
     when(repo.findByIdempotencyKey(anyString())).thenReturn(Optional.empty());
-    when(repo.saveAndFlush(any(Inquiry.class))).thenAnswer(invocation -> {
-      Inquiry entity = invocation.getArgument(0);
-      entity.id = 1L;
-      return entity;
-    });
+    when(repo.saveAndFlush(any(Inquiry.class)))
+        .thenAnswer(
+            invocation -> {
+              Inquiry entity = invocation.getArgument(0);
+              entity.id = 1L;
+              return entity;
+            });
     service = new InquiryServiceImpl(repo, MAPPER, RestClient.builder(), baseUrl, 3, 5);
   }
 
@@ -111,10 +112,12 @@ class InquiryAiIntegrationTest {
   @Test
   @DisplayName("Python returns AI success result")
   void aiSuccess() {
-    handler.response = response(200,
-        "{\"category\":\"ORDER_QUERY\",\"confidence\":0.95,\"needs_human_review\":false,"
-            + "\"suggested_reply\":\"Track your order.\",\"analysis_source\":\"AI\","
-            + "\"error_message\":null}");
+    handler.response =
+        response(
+            200,
+            "{\"category\":\"ORDER_QUERY\",\"confidence\":0.95,\"needs_human_review\":false,"
+                + "\"suggested_reply\":\"Track your order.\",\"analysis_source\":\"AI\","
+                + "\"error_message\":null}");
 
     InquiryResponse result = service.create(payload(), "key-ai-success");
 
@@ -147,10 +150,12 @@ class InquiryAiIntegrationTest {
   @Test
   @DisplayName("Python returns RULE_BASED result")
   void ruleBasedResult() {
-    handler.response = response(200,
-        "{\"category\":\"OTHER\",\"confidence\":0.5,\"needs_human_review\":true,"
-            + "\"suggested_reply\":null,\"analysis_source\":\"RULE_BASED\","
-            + "\"error_message\":\"LLM is not configured\"}");
+    handler.response =
+        response(
+            200,
+            "{\"category\":\"OTHER\",\"confidence\":0.5,\"needs_human_review\":true,"
+                + "\"suggested_reply\":null,\"analysis_source\":\"RULE_BASED\","
+                + "\"error_message\":\"LLM is not configured\"}");
 
     InquiryResponse result = service.create(payload(), "key-rule-based");
 
@@ -175,7 +180,8 @@ class InquiryAiIntegrationTest {
   }
 
   @Test
-  @DisplayName("Idempotency replay returns the original complete result without calling Python again")
+  @DisplayName(
+      "Idempotency replay returns the original complete result without calling Python again")
   void replayReturnsOriginalAnalysis() {
     Inquiry stored =
         new Inquiry(
@@ -207,11 +213,9 @@ class InquiryAiIntegrationTest {
         new Inquiry("key-list", EMAIL, SUBJECT, BODY, "REFUND", 0.75, true, "Refund reply", "AI");
     row.id = 7L;
     InquiryRepository listRepo = mock(InquiryRepository.class);
-    when(listRepo.findAll(
-            ArgumentMatchers.<Specification<Inquiry>>any(), any(Pageable.class)))
+    when(listRepo.findAll(ArgumentMatchers.<Specification<Inquiry>>any(), any(Pageable.class)))
         .thenReturn(new PageImpl<>(List.of(row)));
-    InquiryController controller =
-        new InquiryController(mock(InquiryService.class), listRepo);
+    InquiryController controller = new InquiryController(mock(InquiryService.class), listRepo);
 
     ApiResponse<Page<InquiryManagementResponse>> response =
         controller.list(null, null, null, null, null, PageRequest.of(0, 10));
@@ -235,8 +239,17 @@ class InquiryAiIntegrationTest {
   @DisplayName("Detail endpoint returns the full AI snapshot of one inquiry")
   void detailIncludesAnalysisFields() {
     Inquiry row =
-        new Inquiry("key-detail", EMAIL, SUBJECT, BODY, "PRODUCT_INQUIRY", "PRODUCT_INQUIRY",
-            0.92, false, "Here are the specs.", "AI");
+        new Inquiry(
+            "key-detail",
+            EMAIL,
+            SUBJECT,
+            BODY,
+            "PRODUCT_INQUIRY",
+            "PRODUCT_INQUIRY",
+            0.92,
+            false,
+            "Here are the specs.",
+            "AI");
     row.id = 8L;
     InquiryRepository detailRepo = mock(InquiryRepository.class);
     when(detailRepo.findById(8L)).thenReturn(Optional.of(row));
@@ -257,8 +270,8 @@ class InquiryAiIntegrationTest {
   @DisplayName("Manual category edit changes only category, never the AI snapshot")
   void manualEditPreservesAiSnapshot() throws Exception {
     Inquiry stored =
-        new Inquiry("key-edit", EMAIL, SUBJECT, BODY, "REFUND", "REFUND", 0.88, true,
-            "Refund reply", "AI");
+        new Inquiry(
+            "key-edit", EMAIL, SUBJECT, BODY, "REFUND", "REFUND", 0.88, true, "Refund reply", "AI");
     stored.id = 9L;
     InquiryRepository editRepo = mock(InquiryRepository.class);
     when(editRepo.findById(9L)).thenReturn(Optional.of(stored));
@@ -267,10 +280,11 @@ class InquiryAiIntegrationTest {
 
     // EN: Even if a client sends AI fields, the request DTO has nowhere to store them.
     // 中文：即便客户端夹带 AI 字段，请求 DTO 也没有地方保存它们。
-    InquiryUpdateRequest request = MAPPER.readValue(
-        "{\"category\":\"COMPLAINT\",\"ai_category\":\"ORDER_QUERY\",\"confidence\":0.01,"
-            + "\"needs_human_review\":false,\"suggested_reply\":\"forged\",\"analysis_source\":\"RULE_BASED\"}",
-        InquiryUpdateRequest.class);
+    InquiryUpdateRequest request =
+        MAPPER.readValue(
+            "{\"category\":\"COMPLAINT\",\"ai_category\":\"ORDER_QUERY\",\"confidence\":0.01,"
+                + "\"needs_human_review\":false,\"suggested_reply\":\"forged\",\"analysis_source\":\"RULE_BASED\"}",
+            InquiryUpdateRequest.class);
     InquiryManagementResponse view = controller.update(9L, request).data();
 
     assertThat(stored.category).isEqualTo("COMPLAINT");
@@ -290,8 +304,10 @@ class InquiryAiIntegrationTest {
 
     assertThatThrownBy(() -> service.create(payload(), "key-500"))
         .isInstanceOf(ResponseStatusException.class)
-        .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode())
-            .isEqualTo(HttpStatus.BAD_GATEWAY));
+        .satisfies(
+            e ->
+                assertThat(((ResponseStatusException) e).getStatusCode())
+                    .isEqualTo(HttpStatus.BAD_GATEWAY));
 
     verify(repo, never()).saveAndFlush(any());
   }
@@ -303,8 +319,10 @@ class InquiryAiIntegrationTest {
 
     assertThatThrownBy(() -> service.create(payload(), "key-conn-fail"))
         .isInstanceOf(ResponseStatusException.class)
-        .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode())
-            .isEqualTo(HttpStatus.BAD_GATEWAY));
+        .satisfies(
+            e ->
+                assertThat(((ResponseStatusException) e).getStatusCode())
+                    .isEqualTo(HttpStatus.BAD_GATEWAY));
   }
 
   @Test
@@ -322,8 +340,10 @@ class InquiryAiIntegrationTest {
 
     assertThatThrownBy(() -> service.create(payload(), "key-timeout"))
         .isInstanceOf(ResponseStatusException.class)
-        .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode())
-            .isEqualTo(HttpStatus.BAD_GATEWAY));
+        .satisfies(
+            e ->
+                assertThat(((ResponseStatusException) e).getStatusCode())
+                    .isEqualTo(HttpStatus.BAD_GATEWAY));
   }
 
   @Test
@@ -363,9 +383,11 @@ class InquiryAiIntegrationTest {
     logger.addAppender(appender);
     try {
       // Success path: request/response/result logs.
-      handler.response = response(200,
-          "{\"category\":\"ORDER_QUERY\",\"confidence\":0.9,\"needs_human_review\":false,"
-              + "\"analysis_source\":\"AI\",\"error_message\":null}");
+      handler.response =
+          response(
+              200,
+              "{\"category\":\"ORDER_QUERY\",\"confidence\":0.9,\"needs_human_review\":false,"
+                  + "\"analysis_source\":\"AI\",\"error_message\":null}");
       service.create(payload(), "key-log-success");
 
       // Failure path: only the exception type is logged.
@@ -373,7 +395,8 @@ class InquiryAiIntegrationTest {
       assertThatThrownBy(() -> service.create(payload(), "key-log-fail"))
           .isInstanceOf(ResponseStatusException.class);
 
-      String all = String.join("\n", appender.list.stream().map(e -> e.getFormattedMessage()).toList());
+      String all =
+          String.join("\n", appender.list.stream().map(e -> e.getFormattedMessage()).toList());
       assertThat(all).doesNotContain(EMAIL, SUBJECT, BODY);
       assertThat(all).doesNotContain("PRIVATE_");
       assertThat(all).doesNotContain("jsonBody");
@@ -390,13 +413,13 @@ class InquiryAiIntegrationTest {
     Inquiry legacy = new Inquiry("key-legacy", EMAIL, SUBJECT, BODY, "OTHER");
     legacy.id = 9L;
     InquiryRepository listRepo = mock(InquiryRepository.class);
-    when(listRepo.findAll(
-            ArgumentMatchers.<Specification<Inquiry>>any(), any(Pageable.class)))
+    when(listRepo.findAll(ArgumentMatchers.<Specification<Inquiry>>any(), any(Pageable.class)))
         .thenReturn(new PageImpl<>(List.of(legacy)));
     InquiryController controller = new InquiryController(mock(InquiryService.class), listRepo);
 
     InquiryManagementResponse view =
-        controller.list(null, null, null, null, null, PageRequest.of(0, 10))
+        controller
+            .list(null, null, null, null, null, PageRequest.of(0, 10))
             .data()
             .getContent()
             .get(0);
@@ -475,19 +498,33 @@ class InquiryAiIntegrationTest {
     handler.response = response(200, json);
     assertThatThrownBy(() -> service.create(payload(), "key-invalid"))
         .isInstanceOf(ResponseStatusException.class)
-        .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode())
-            .isEqualTo(HttpStatus.BAD_GATEWAY));
+        .satisfies(
+            e ->
+                assertThat(((ResponseStatusException) e).getStatusCode())
+                    .isEqualTo(HttpStatus.BAD_GATEWAY));
     verify(repo, never()).saveAndFlush(any());
   }
 
-  /** EN: Build analysis JSON with raw values so missing/invalid fields are representable. 中文：用原始片段拼接 JSON，便于表达缺失或非法值。 */
+  /**
+   * EN: Build analysis JSON with raw values so missing/invalid fields are representable. 中文：用原始片段拼接
+   * JSON，便于表达缺失或非法值。
+   */
   private static String analysisJson(
-      String category, String confidence, String needsReview, String suggestedReply, String source) {
-    return "{\"category\":" + jsonStringOrNull(category)
-        + ",\"confidence\":" + confidence
-        + ",\"needs_human_review\":" + needsReview
-        + ",\"suggested_reply\":" + jsonStringOrNull(suggestedReply)
-        + ",\"analysis_source\":" + jsonStringOrNull(source)
+      String category,
+      String confidence,
+      String needsReview,
+      String suggestedReply,
+      String source) {
+    return "{\"category\":"
+        + jsonStringOrNull(category)
+        + ",\"confidence\":"
+        + confidence
+        + ",\"needs_human_review\":"
+        + needsReview
+        + ",\"suggested_reply\":"
+        + jsonStringOrNull(suggestedReply)
+        + ",\"analysis_source\":"
+        + jsonStringOrNull(source)
         + "}";
   }
 

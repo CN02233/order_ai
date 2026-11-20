@@ -69,8 +69,17 @@ public class Inquiry {
       Boolean needsHumanReview,
       String suggestedReply,
       String analysisSource) {
-    this(key, email, subject, body, category, category, confidence, needsHumanReview,
-        suggestedReply, analysisSource);
+    this(
+        key,
+        email,
+        subject,
+        body,
+        category,
+        category,
+        confidence,
+        needsHumanReview,
+        suggestedReply,
+        analysisSource);
   }
 
   public Inquiry(

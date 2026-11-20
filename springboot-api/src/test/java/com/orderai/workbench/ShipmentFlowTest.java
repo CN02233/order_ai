@@ -29,9 +29,16 @@ class ShipmentFlowTest extends OrderAiTestSupport {
   @Autowired OrderService orderService;
   @Autowired ShipmentService shipmentService;
 
-  private ShipmentCreateRequest shipment(String orderNumber, String tracking, List<ShipmentItemRequest> items) {
-    return new ShipmentCreateRequest(orderNumber, "SF Express", tracking, LocalDate.now().plusDays(2),
-        "Test Receiver", "handle with care", items);
+  private ShipmentCreateRequest shipment(
+      String orderNumber, String tracking, List<ShipmentItemRequest> items) {
+    return new ShipmentCreateRequest(
+        orderNumber,
+        "SF Express",
+        tracking,
+        LocalDate.now().plusDays(2),
+        "Test Receiver",
+        "handle with care",
+        items);
   }
 
   /** Status-only update: carrier, dates and note stay untouched. */
@@ -40,7 +47,8 @@ class ShipmentFlowTest extends OrderAiTestSupport {
   }
 
   /** Status update that also appends one tracking event. */
-  private static ShipmentUpdateRequest withEvent(String status, String location, String description) {
+  private static ShipmentUpdateRequest withEvent(
+      String status, String location, String description) {
     return new ShipmentUpdateRequest(null, null, status, null, null, null, location, description);
   }
 
@@ -73,13 +81,15 @@ class ShipmentFlowTest extends OrderAiTestSupport {
     orderService.create(orderRequest("ORD-S-2", 4));
     long lineId = orderService.find("ORD-S-2").items().get(0).id();
 
-    ShipmentResponse first = shipmentService.create(
-        shipment("ORD-S-2", "SF-0002", List.of(new ShipmentItemRequest(lineId, 1))));
+    ShipmentResponse first =
+        shipmentService.create(
+            shipment("ORD-S-2", "SF-0002", List.of(new ShipmentItemRequest(lineId, 1))));
     // Three units are still in the warehouse, so the order has not shipped yet.
     assertThat(orderService.find("ORD-S-2").status()).isEqualTo("PROCESSING");
 
-    ShipmentResponse second = shipmentService.create(
-        shipment("ORD-S-2", "SF-0003", List.of(new ShipmentItemRequest(lineId, 3))));
+    ShipmentResponse second =
+        shipmentService.create(
+            shipment("ORD-S-2", "SF-0003", List.of(new ShipmentItemRequest(lineId, 3))));
     assertThat(second.items().get(0).quantity()).isEqualTo(3);
     // Every unit is now on a parcel, so the order flips to shipped.
     assertThat(orderService.find("ORD-S-2").status()).isEqualTo("SHIPPED");
@@ -100,20 +110,25 @@ class ShipmentFlowTest extends OrderAiTestSupport {
     orderService.create(orderRequest("ORD-S-3", 5));
     long lineId = orderService.find("ORD-S-3").items().get(0).id();
 
-    shipmentService.create(shipment("ORD-S-3", "SF-0004", List.of(new ShipmentItemRequest(lineId, 2))));
+    shipmentService.create(
+        shipment("ORD-S-3", "SF-0004", List.of(new ShipmentItemRequest(lineId, 2))));
 
-    assertThatThrownBy(() -> shipmentService.create(
-        shipment("ORD-S-3", "SF-0005", List.of(new ShipmentItemRequest(lineId, 4)))))
+    assertThatThrownBy(
+            () ->
+                shipmentService.create(
+                    shipment("ORD-S-3", "SF-0005", List.of(new ShipmentItemRequest(lineId, 4)))))
         .isInstanceOf(ResponseStatusException.class)
         .hasMessageContaining("exceeds the unshipped quantity");
 
     // The rejected parcel wrote nothing.
     assertThat(shipmentService.findByOrder("ORD-S-3")).hasSize(1);
 
-    // A partially shipped order stays processing, otherwise the second parcel could never be created.
+    // A partially shipped order stays processing, otherwise the second parcel could never be
+    // created.
     assertThat(orderService.find("ORD-S-3").status()).isEqualTo("PROCESSING");
 
-    shipmentService.create(shipment("ORD-S-3", "SF-0006", List.of(new ShipmentItemRequest(lineId, 3))));
+    shipmentService.create(
+        shipment("ORD-S-3", "SF-0006", List.of(new ShipmentItemRequest(lineId, 3))));
     assertThat(shipmentService.findByOrder("ORD-S-3")).hasSize(2);
     assertThat(orderService.find("ORD-S-3").status()).isEqualTo("SHIPPED");
 
@@ -128,19 +143,15 @@ class ShipmentFlowTest extends OrderAiTestSupport {
     orderService.create(orderRequest("ORD-S-4", 1));
     ShipmentResponse parcel = shipmentService.create(shipment("ORD-S-4", "SF-0008", List.of()));
 
-    shipmentService.update(parcel.id(),
-        withEvent("PICKED_UP", "Shanghai", "Picked up"));
+    shipmentService.update(parcel.id(), withEvent("PICKED_UP", "Shanghai", "Picked up"));
 
-    assertThatThrownBy(() -> shipmentService.update(parcel.id(),
-        statusOnly("CREATED")))
+    assertThatThrownBy(() -> shipmentService.update(parcel.id(), statusOnly("CREATED")))
         .isInstanceOf(ResponseStatusException.class)
         .hasMessageContaining("cannot change");
 
-    shipmentService.update(parcel.id(),
-        withEvent("DELIVERED", "Hangzhou", "Signed by customer"));
+    shipmentService.update(parcel.id(), withEvent("DELIVERED", "Hangzhou", "Signed by customer"));
 
-    assertThatThrownBy(() -> shipmentService.update(parcel.id(),
-        statusOnly("IN_TRANSIT")))
+    assertThatThrownBy(() -> shipmentService.update(parcel.id(), statusOnly("IN_TRANSIT")))
         .isInstanceOf(ResponseStatusException.class);
 
     ShipmentResponse reloaded = shipmentService.find(parcel.id());
@@ -156,8 +167,10 @@ class ShipmentFlowTest extends OrderAiTestSupport {
     orderService.create(orderRequest("ORD-S-5", 1));
     ShipmentResponse parcel = shipmentService.create(shipment("ORD-S-5", "SF-0009", List.of()));
 
-    ShipmentResponse updated = shipmentService.addEvent(parcel.id(),
-        new ShipmentEventRequest(null, "Suzhou hub", "Arrived at sorting centre", null));
+    ShipmentResponse updated =
+        shipmentService.addEvent(
+            parcel.id(),
+            new ShipmentEventRequest(null, "Suzhou hub", "Arrived at sorting centre", null));
 
     assertThat(updated.status()).isEqualTo("CREATED");
     assertThat(updated.events()).hasSize(2);

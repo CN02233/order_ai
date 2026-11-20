@@ -36,7 +36,8 @@ class RefundFlowTest extends OrderAiTestSupport {
     itemId = orderItems.findAllByOrderIdOrderById(reloadedOrder("ORD-R-1").id).get(0).id;
   }
 
-  private RefundCreateRequest refund(String amount, String type, List<RefundReturnLineRequest> lines) {
+  private RefundCreateRequest refund(
+      String amount, String type, List<RefundReturnLineRequest> lines) {
     return new RefundCreateRequest("ORD-R-1", "damaged", new BigDecimal(amount), type, lines);
   }
 
@@ -77,24 +78,39 @@ class RefundFlowTest extends OrderAiTestSupport {
   @Test
   @DisplayName("return quantities cannot exceed what was bought, across separate requests")
   void returnQuantityLimitedAcrossRequests() {
-    assertThatThrownBy(() -> refundService.create(
-        refund("10.00", "RETURN_AND_REFUND", List.of(new RefundReturnLineRequest(itemId, 5))), "k-many"))
+    assertThatThrownBy(
+            () ->
+                refundService.create(
+                    refund(
+                        "10.00",
+                        "RETURN_AND_REFUND",
+                        List.of(new RefundReturnLineRequest(itemId, 5))),
+                    "k-many"))
         .isInstanceOf(ResponseStatusException.class)
         .hasMessageContaining("still returnable");
 
     refundService.create(
-        refund("12.99", "RETURN_AND_REFUND", List.of(new RefundReturnLineRequest(itemId, 1))), "k-one");
+        refund("12.99", "RETURN_AND_REFUND", List.of(new RefundReturnLineRequest(itemId, 1))),
+        "k-one");
 
-    assertThatThrownBy(() -> refundService.create(
-        refund("6.00", "RETURN_AND_REFUND", List.of(new RefundReturnLineRequest(itemId, 2))), "k-two"))
+    assertThatThrownBy(
+            () ->
+                refundService.create(
+                    refund(
+                        "6.00",
+                        "RETURN_AND_REFUND",
+                        List.of(new RefundReturnLineRequest(itemId, 2))),
+                    "k-two"))
         .isInstanceOf(ResponseStatusException.class);
   }
 
   @Test
   @DisplayName("approval changes status only; stock moves when goods are received")
   void approvalDoesNotTouchStockButReceiptDoes() {
-    RefundResponse request = refundService.create(
-        refund("12.99", "RETURN_AND_REFUND", List.of(new RefundReturnLineRequest(itemId, 1))), "k-approve");
+    RefundResponse request =
+        refundService.create(
+            refund("12.99", "RETURN_AND_REFUND", List.of(new RefundReturnLineRequest(itemId, 1))),
+            "k-approve");
     assertThat(request.returnItems()).hasSize(1);
     assertThat(request.returnItems().get(0).acceptedQuantity()).isZero();
     assertThat(request.order()).isNotNull();
@@ -105,27 +121,36 @@ class RefundFlowTest extends OrderAiTestSupport {
     assertThat(approved.inventoryReceived()).isFalse();
     assertThat(reloaded().stock).isEqualTo(8); // untouched by approval
 
-    RefundResponse received = refundService.receive(request.id(),
-        new RefundReceiveRequest(List.of(new RefundReceiveLineRequest(itemId, 1))));
+    RefundResponse received =
+        refundService.receive(
+            request.id(),
+            new RefundReceiveRequest(List.of(new RefundReceiveLineRequest(itemId, 1))));
     assertThat(received.inventoryReceived()).isTrue();
     assertThat(received.returnItems().get(0).acceptedQuantity()).isEqualTo(1);
     assertThat(reloaded().stock).isEqualTo(9);
 
-    assertThatThrownBy(() -> refundService.receive(request.id(),
-        new RefundReceiveRequest(List.of(new RefundReceiveLineRequest(itemId, 1)))))
+    assertThatThrownBy(
+            () ->
+                refundService.receive(
+                    request.id(),
+                    new RefundReceiveRequest(List.of(new RefundReceiveLineRequest(itemId, 1)))))
         .isInstanceOf(ResponseStatusException.class)
         .hasMessageContaining("already received");
     assertThat(reloaded().stock).isEqualTo(9);
   }
 
   @Test
-  @DisplayName("an approved return cannot be received before approval, and only for return-and-refund")
+  @DisplayName(
+      "an approved return cannot be received before approval, and only for return-and-refund")
   void receiptRequiresApproval() {
     RefundResponse only = refundService.create(refund("12.99", "REFUND_ONLY", null), "k-only");
     assertThat(only.returnItems()).isEmpty();
 
-    assertThatThrownBy(() -> refundService.receive(only.id(),
-        new RefundReceiveRequest(List.of(new RefundReceiveLineRequest(itemId, 1)))))
+    assertThatThrownBy(
+            () ->
+                refundService.receive(
+                    only.id(),
+                    new RefundReceiveRequest(List.of(new RefundReceiveLineRequest(itemId, 1)))))
         .isInstanceOf(ResponseStatusException.class)
         .hasMessageContaining("Only approved return-and-refund");
   }
@@ -136,8 +161,12 @@ class RefundFlowTest extends OrderAiTestSupport {
     orderService.create(orderRequest("ORD-R-2", 1));
     orderService.update("ORD-R-2", new OrderUpdateRequest("CANCELLED", null));
 
-    assertThatThrownBy(() -> refundService.create(
-        new RefundCreateRequest("ORD-R-2", "late", new BigDecimal("12.99"), "REFUND_ONLY", null), "k-cancel"))
+    assertThatThrownBy(
+            () ->
+                refundService.create(
+                    new RefundCreateRequest(
+                        "ORD-R-2", "late", new BigDecimal("12.99"), "REFUND_ONLY", null),
+                    "k-cancel"))
         .isInstanceOf(ResponseStatusException.class)
         .hasMessageContaining("processing, shipped or delivered");
   }
@@ -157,10 +186,14 @@ class RefundFlowTest extends OrderAiTestSupport {
   @DisplayName("a rejected request does not block cancelling the order any more")
   void rejectedRefundDoesNotBlockCancellation() {
     orderService.create(orderRequest("ORD-R-3", 1));
-    RefundResponse request = refundService.create(
-        new RefundCreateRequest("ORD-R-3", "changed mind", new BigDecimal("12.99"), "REFUND_ONLY", null), "k-c3");
+    RefundResponse request =
+        refundService.create(
+            new RefundCreateRequest(
+                "ORD-R-3", "changed mind", new BigDecimal("12.99"), "REFUND_ONLY", null),
+            "k-c3");
 
-    assertThatThrownBy(() -> orderService.update("ORD-R-3", new OrderUpdateRequest("CANCELLED", null)))
+    assertThatThrownBy(
+            () -> orderService.update("ORD-R-3", new OrderUpdateRequest("CANCELLED", null)))
         .isInstanceOf(ResponseStatusException.class)
         .hasMessageContaining("refund requests");
 

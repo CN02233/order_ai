@@ -42,11 +42,12 @@ import org.springframework.web.server.ResponseStatusException;
 @Service
 public class OrderServiceImpl implements OrderService {
   /** Allowed forward transitions only: no jumping straight to DELIVERED, no reopening. */
-  private static final Map<String, Set<String>> ALLOWED_TRANSITIONS = Map.of(
-      "PROCESSING", Set.of("PROCESSING", "SHIPPED", "CANCELLED"),
-      "SHIPPED", Set.of("SHIPPED", "DELIVERED"),
-      "DELIVERED", Set.of("DELIVERED"),
-      "CANCELLED", Set.of("CANCELLED"));
+  private static final Map<String, Set<String>> ALLOWED_TRANSITIONS =
+      Map.of(
+          "PROCESSING", Set.of("PROCESSING", "SHIPPED", "CANCELLED"),
+          "SHIPPED", Set.of("SHIPPED", "DELIVERED"),
+          "DELIVERED", Set.of("DELIVERED"),
+          "CANCELLED", Set.of("CANCELLED"));
 
   private final OrderRepository orders;
   private final OrderItemRepository items;
@@ -59,10 +60,17 @@ public class OrderServiceImpl implements OrderService {
   private final InventoryService inventory;
   private final OrderViewAssembler views;
 
-  public OrderServiceImpl(OrderRepository orders, OrderItemRepository items, CustomerRepository customers,
-      RefundRequestRepository refunds, RefundReturnItemRepository returnItems,
-      ShipmentRepository shipments, ShipmentItemRepository shipmentItems,
-      ShipmentEventRepository shipmentEvents, InventoryService inventory, OrderViewAssembler views) {
+  public OrderServiceImpl(
+      OrderRepository orders,
+      OrderItemRepository items,
+      CustomerRepository customers,
+      RefundRequestRepository refunds,
+      RefundReturnItemRepository returnItems,
+      ShipmentRepository shipments,
+      ShipmentItemRepository shipmentItems,
+      ShipmentEventRepository shipmentEvents,
+      InventoryService inventory,
+      OrderViewAssembler views) {
     this.orders = orders;
     this.items = items;
     this.customers = customers;
@@ -78,8 +86,11 @@ public class OrderServiceImpl implements OrderService {
   @Override
   @Transactional(readOnly = true)
   public OrderResponse find(String number) {
-    OrderEntity order = orders.findByOrderNumber(number)
-        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Order not found"));
+    OrderEntity order =
+        orders
+            .findByOrderNumber(number)
+            .orElseThrow(
+                () -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Order not found"));
     return views.toDetail(order);
   }
 
@@ -93,7 +104,8 @@ public class OrderServiceImpl implements OrderService {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "customer_id is required");
     }
     if (request.items() == null || request.items().isEmpty()) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "items must contain at least one order line");
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, "items must contain at least one order line");
     }
     String orderNumber = request.orderNumber().trim();
     if (orders.findByOrderNumber(orderNumber).isPresent()) {
@@ -106,9 +118,13 @@ public class OrderServiceImpl implements OrderService {
     // Merge duplicate SKUs and lock them in a stable order so concurrent checkouts cannot deadlock.
     Map<String, Integer> quantities = new TreeMap<>();
     for (OrderItemCreateRequest line : request.items()) {
-      if (line == null || line.sku() == null || line.sku().isBlank()
-          || line.quantity() == null || line.quantity() <= 0) {
-        throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+      if (line == null
+          || line.sku() == null
+          || line.sku().isBlank()
+          || line.quantity() == null
+          || line.quantity() <= 0) {
+        throw new ResponseStatusException(
+            HttpStatus.BAD_REQUEST,
             "Each item needs a non-empty sku and a positive quantity "
                 + "(customer_id is the customer's numeric id, not email)");
       }
@@ -150,14 +166,18 @@ public class OrderServiceImpl implements OrderService {
   @Override
   @Transactional
   public OrderManagementResponse update(String number, OrderUpdateRequest request) {
-    OrderEntity order = orders.findByOrderNumberForUpdate(number)
-        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Order not found"));
+    OrderEntity order =
+        orders
+            .findByOrderNumberForUpdate(number)
+            .orElseThrow(
+                () -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Order not found"));
 
     String target = request.status();
     if (target != null && !target.equals(order.status)) {
       Set<String> allowed = ALLOWED_TRANSITIONS.get(order.status);
       if (allowed == null || !allowed.contains(target)) {
-        throw new ResponseStatusException(HttpStatus.CONFLICT,
+        throw new ResponseStatusException(
+            HttpStatus.CONFLICT,
             "Order status cannot change from " + order.status + " to " + target);
       }
       if ("CANCELLED".equals(target)) {
@@ -175,16 +195,18 @@ public class OrderServiceImpl implements OrderService {
   private void cancel(OrderEntity order) {
     BigDecimal reservedAmount = refunds.sumReservedAmountByOrder(order.orderNumber);
     if (reservedAmount != null && reservedAmount.signum() > 0) {
-      throw new ResponseStatusException(HttpStatus.CONFLICT,
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT,
           "Order has open or approved refund requests; resolve them before cancelling");
     }
     // A parcel already handed to a carrier cannot be un-shipped by cancelling the order.
-    long liveShipments = shipments.findAllByOrderIdOrderByIdAsc(order.id).stream()
-        .filter(shipment -> !"CANCELLED".equals(shipment.status))
-        .count();
+    long liveShipments =
+        shipments.findAllByOrderIdOrderByIdAsc(order.id).stream()
+            .filter(shipment -> !"CANCELLED".equals(shipment.status))
+            .count();
     if (liveShipments > 0) {
-      throw new ResponseStatusException(HttpStatus.CONFLICT,
-          "Order already has shipments; cancel or delete the parcels first");
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT, "Order already has shipments; cancel or delete the parcels first");
     }
     if (order.stockReserved) {
       for (OrderItem line : items.findAllByOrderIdOrderById(order.id)) {
@@ -202,12 +224,16 @@ public class OrderServiceImpl implements OrderService {
   @Override
   @Transactional
   public void delete(String number) {
-    OrderEntity order = orders.findByOrderNumberForUpdate(number)
-        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Order not found"));
+    OrderEntity order =
+        orders
+            .findByOrderNumberForUpdate(number)
+            .orElseThrow(
+                () -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Order not found"));
 
     BigDecimal reservedAmount = refunds.sumReservedAmountByOrder(order.orderNumber);
     if (reservedAmount != null && reservedAmount.signum() > 0) {
-      throw new ResponseStatusException(HttpStatus.CONFLICT,
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT,
           "Order has open or approved refund requests; resolve them before deleting");
     }
 
@@ -222,9 +248,11 @@ public class OrderServiceImpl implements OrderService {
       order.stockReserved = false;
     }
 
-    // Children first: foreign keys are RESTRICT, so order_items/refunds/shipments must go before the order.
+    // Children first: foreign keys are RESTRICT, so order_items/refunds/shipments must go before
+    // the order.
     for (Shipment shipment : shipments.findAllByOrderIdOrderByIdAsc(order.id)) {
-      shipmentEvents.deleteAll(shipmentEvents.findAllByShipmentIdOrderByOccurredAtAscIdAsc(shipment.id));
+      shipmentEvents.deleteAll(
+          shipmentEvents.findAllByShipmentIdOrderByOccurredAtAscIdAsc(shipment.id));
       shipmentItems.deleteAll(shipmentItems.findAllByShipmentId(shipment.id));
       shipments.delete(shipment);
     }
@@ -237,7 +265,7 @@ public class OrderServiceImpl implements OrderService {
   }
 
   private OrderManagementResponse toManagement(OrderEntity o) {
-    return new OrderManagementResponse(o.id, o.orderNumber, o.customerId, o.status, o.trackingNumber,
-        o.createdAt, o.totalAmount);
+    return new OrderManagementResponse(
+        o.id, o.orderNumber, o.customerId, o.status, o.trackingNumber, o.createdAt, o.totalAmount);
   }
 }

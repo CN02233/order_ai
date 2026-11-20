@@ -23,10 +23,10 @@ public class OrderEntity {
   @Column(name = "tracking_number")
   public String trackingNumber;
 
-  @Column(name="total_amount", nullable=false)
+  @Column(name = "total_amount", nullable = false)
   public BigDecimal totalAmount = BigDecimal.ZERO;
 
-  @Column(name="stock_reserved", nullable=false)
+  @Column(name = "stock_reserved", nullable = false)
   public boolean stockReserved;
 
   @CreationTimestamp

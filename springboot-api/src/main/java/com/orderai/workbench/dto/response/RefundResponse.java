@@ -9,8 +9,8 @@ import java.util.List;
 /**
  * Refund detail, always rendered together with the order it belongs to.
  *
- * <p>Approval only records a manual decision. {@code inventoryReceived} turns true once the returned
- * goods have actually been inspected, which is also the moment stock is increased.
+ * <p>Approval only records a manual decision. {@code inventoryReceived} turns true once the
+ * returned goods have actually been inspected, which is also the moment stock is increased.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record RefundResponse(

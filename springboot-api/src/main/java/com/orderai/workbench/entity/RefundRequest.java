@@ -21,13 +21,13 @@ public class RefundRequest {
   @Column(columnDefinition = "TEXT")
   public String reason;
 
-  @Column(nullable=false, precision=12, scale=2)
+  @Column(nullable = false, precision = 12, scale = 2)
   public BigDecimal amount = BigDecimal.ZERO;
 
-  @Column(name="refund_type", nullable=false)
+  @Column(name = "refund_type", nullable = false)
   public String refundType = "REFUND_ONLY";
 
-  @Column(name="inventory_received", nullable=false)
+  @Column(name = "inventory_received", nullable = false)
   public boolean inventoryReceived;
 
   public String status = "PENDING_MANUAL_APPROVAL";
@@ -42,7 +42,8 @@ public class RefundRequest {
 
   protected RefundRequest() {}
 
-  public RefundRequest(String key, String order, String reason, BigDecimal amount, String refundType) {
+  public RefundRequest(
+      String key, String order, String reason, BigDecimal amount, String refundType) {
     idempotencyKey = key;
     orderNumber = order;
     this.reason = reason;

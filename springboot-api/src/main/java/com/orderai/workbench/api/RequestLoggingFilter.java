@@ -30,8 +30,12 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
     } finally {
       if (loggable) {
         long elapsedMs = (System.nanoTime() - startedAt) / 1_000_000;
-        log.info("Request completed: method={} path={} status={} durationMs={}",
-            request.getMethod(), path, response.getStatus(), elapsedMs);
+        log.info(
+            "Request completed: method={} path={} status={} durationMs={}",
+            request.getMethod(),
+            path,
+            response.getStatus(),
+            elapsedMs);
       }
     }
   }

@@ -83,7 +83,8 @@ class OrderLifecycleTest extends OrderAiTestSupport {
     orderService.update("ORD-T-4", new OrderUpdateRequest("CANCELLED", null));
     assertThat(reloaded().stock).isEqualTo(10);
 
-    assertThatThrownBy(() -> orderService.update("ORD-T-4", new OrderUpdateRequest("SHIPPED", null)))
+    assertThatThrownBy(
+            () -> orderService.update("ORD-T-4", new OrderUpdateRequest("SHIPPED", null)))
         .isInstanceOf(ResponseStatusException.class)
         .hasMessageContaining("cannot change");
     assertThat(reloaded().stock).isEqualTo(10);
@@ -94,14 +95,16 @@ class OrderLifecycleTest extends OrderAiTestSupport {
   void statusMachineIsForwardOnly() {
     orderService.create(orderRequest("ORD-T-5", 1));
 
-    assertThatThrownBy(() -> orderService.update("ORD-T-5", new OrderUpdateRequest("DELIVERED", null)))
+    assertThatThrownBy(
+            () -> orderService.update("ORD-T-5", new OrderUpdateRequest("DELIVERED", null)))
         .isInstanceOf(ResponseStatusException.class);
 
     orderService.update("ORD-T-5", new OrderUpdateRequest("SHIPPED", "TRK-1"));
     orderService.update("ORD-T-5", new OrderUpdateRequest("DELIVERED", null));
     assertThat(reloadedOrder("ORD-T-5").status).isEqualTo("DELIVERED");
 
-    assertThatThrownBy(() -> orderService.update("ORD-T-5", new OrderUpdateRequest("CANCELLED", null)))
+    assertThatThrownBy(
+            () -> orderService.update("ORD-T-5", new OrderUpdateRequest("CANCELLED", null)))
         .isInstanceOf(ResponseStatusException.class);
   }
 
@@ -130,8 +133,10 @@ class OrderLifecycleTest extends OrderAiTestSupport {
   void deleteBlockedByOpenRefund() {
     orderService.create(orderRequest("ORD-T-DEL-R", 2));
     // A pending refund reserves money, so the order must stay for audit.
-    refundService.create(new RefundCreateRequest(
-        "ORD-T-DEL-R", "damaged", new BigDecimal("5.00"), "REFUND_ONLY", List.of()), "k-del-block");
+    refundService.create(
+        new RefundCreateRequest(
+            "ORD-T-DEL-R", "damaged", new BigDecimal("5.00"), "REFUND_ONLY", List.of()),
+        "k-del-block");
 
     assertThatThrownBy(() -> orderService.delete("ORD-T-DEL-R"))
         .isInstanceOf(ResponseStatusException.class)

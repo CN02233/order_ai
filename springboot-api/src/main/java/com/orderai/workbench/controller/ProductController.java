@@ -43,8 +43,12 @@ public class ProductController {
   private final StockMovementRepository stockMovements;
   private final InventoryService inventory;
 
-  public ProductController(ProductService service, ProductRepository products, OrderItemRepository orderItems,
-      StockMovementRepository stockMovements, InventoryService inventory) {
+  public ProductController(
+      ProductService service,
+      ProductRepository products,
+      OrderItemRepository orderItems,
+      StockMovementRepository stockMovements,
+      InventoryService inventory) {
     this.service = service;
     this.products = products;
     this.orderItems = orderItems;
@@ -65,12 +69,16 @@ public class ProductController {
 
     Specification<Product> spec = (root, query, cb) -> cb.conjunction();
     if (sku != null && !sku.isBlank()) {
-      spec = spec.and((root, query, cb) -> cb.like(cb.lower(root.get("sku")),
-          "%" + sku.toLowerCase() + "%"));
+      spec =
+          spec.and(
+              (root, query, cb) ->
+                  cb.like(cb.lower(root.get("sku")), "%" + sku.toLowerCase() + "%"));
     }
     if (name != null && !name.isBlank()) {
-      spec = spec.and((root, query, cb) -> cb.like(cb.lower(root.get("name")),
-          "%" + name.toLowerCase() + "%"));
+      spec =
+          spec.and(
+              (root, query, cb) ->
+                  cb.like(cb.lower(root.get("name")), "%" + name.toLowerCase() + "%"));
     }
     if (minStock != null) {
       spec = spec.and((root, query, cb) -> cb.greaterThanOrEqualTo(root.get("stock"), minStock));
@@ -87,11 +95,13 @@ public class ProductController {
 
     Page<Product> page = products.findAll(spec, pageable);
     Map<Long, Long> orderCounts = orderCounts(page.getContent());
-    return ApiResponse.success(page.map(
-        product -> toView(product, orderCounts.getOrDefault(product.id, 0L))));
+    return ApiResponse.success(
+        page.map(product -> toView(product, orderCounts.getOrDefault(product.id, 0L))));
   }
 
-  /** The stock in the request becomes the opening balance and is recorded as an ADJUSTMENT movement. */
+  /**
+   * The stock in the request becomes the opening balance and is recorded as an ADJUSTMENT movement.
+   */
   @PostMapping
   public ApiResponse<ProductManagementResponse> create(@RequestBody ProductRequest input) {
     requireCatalogueFields(input);
@@ -118,19 +128,31 @@ public class ProductController {
    * inline edit cannot silently overwrite the physical stock count.
    */
   @PutMapping("/{sku}")
-  public ApiResponse<ProductManagementResponse> update(@PathVariable String sku, @RequestBody ProductRequest input) {
-    Product product = products.findBySku(sku)
-        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Product not found"));
-    if (input.name() == null || input.name().isBlank() || input.price() == null || input.price().signum() < 0) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "name and non-negative price are required");
+  public ApiResponse<ProductManagementResponse> update(
+      @PathVariable String sku, @RequestBody ProductRequest input) {
+    Product product =
+        products
+            .findBySku(sku)
+            .orElseThrow(
+                () -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Product not found"));
+    if (input.name() == null
+        || input.name().isBlank()
+        || input.price() == null
+        || input.price().signum() < 0) {
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, "name and non-negative price are required");
     }
     if (input.stock() != null && !input.stock().equals(product.stock)) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-          "Stock cannot be edited here; use POST /api/products/" + product.sku + "/stock-adjustments");
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST,
+          "Stock cannot be edited here; use POST /api/products/"
+              + product.sku
+              + "/stock-adjustments");
     }
     if (input.sku() != null && !input.sku().isBlank() && !input.sku().trim().equals(product.sku)) {
       if (orderItems.existsByProductId(product.id)) {
-        throw new ResponseStatusException(HttpStatus.CONFLICT, "A SKU referenced by orders cannot be renamed");
+        throw new ResponseStatusException(
+            HttpStatus.CONFLICT, "A SKU referenced by orders cannot be renamed");
       }
       product.sku = input.sku().trim();
     }
@@ -146,19 +168,21 @@ public class ProductController {
     boolean invalidStock = p.stock() == null || p.stock() < 0;
     boolean invalidPrice = p.price() == null || p.price().compareTo(BigDecimal.ZERO) < 0;
     if (missingSku || missingName || invalidStock || invalidPrice) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-          "sku, name, non-negative stock and price are required");
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, "sku, name, non-negative stock and price are required");
     }
   }
 
   /** A range filter is only meaningful when it is not inverted and not negative. */
-  private static void requireSaneRanges(Integer minStock, Integer maxStock, BigDecimal minPrice,
-      BigDecimal maxPrice) {
-    boolean negativeStock = (minStock != null && minStock < 0) || (maxStock != null && maxStock < 0);
+  private static void requireSaneRanges(
+      Integer minStock, Integer maxStock, BigDecimal minPrice, BigDecimal maxPrice) {
+    boolean negativeStock =
+        (minStock != null && minStock < 0) || (maxStock != null && maxStock < 0);
     boolean invertedStock = minStock != null && maxStock != null && minStock > maxStock;
-    boolean negativePrice = (minPrice != null && minPrice.signum() < 0)
-        || (maxPrice != null && maxPrice.signum() < 0);
-    boolean invertedPrice = minPrice != null && maxPrice != null && minPrice.compareTo(maxPrice) > 0;
+    boolean negativePrice =
+        (minPrice != null && minPrice.signum() < 0) || (maxPrice != null && maxPrice.signum() < 0);
+    boolean invertedPrice =
+        minPrice != null && maxPrice != null && minPrice.compareTo(maxPrice) > 0;
     if (negativeStock || invertedStock || negativePrice || invertedPrice) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid stock or price range");
     }
@@ -166,14 +190,20 @@ public class ProductController {
 
   @DeleteMapping("/{sku}")
   public ApiResponse<Void> delete(@PathVariable String sku) {
-    Product p = products.findBySku(sku)
-        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Product not found"));
+    Product p =
+        products
+            .findBySku(sku)
+            .orElseThrow(
+                () -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Product not found"));
     if (orderItems.existsByProductId(p.id)) {
-      throw new ResponseStatusException(HttpStatus.CONFLICT, "Products referenced by orders cannot be deleted");
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT, "Products referenced by orders cannot be deleted");
     }
-    // The ledger is append-only: a product with stock history must stay so its movements stay explainable.
+    // The ledger is append-only: a product with stock history must stay so its movements stay
+    // explainable.
     if (stockMovements.existsByProductId(p.id)) {
-      throw new ResponseStatusException(HttpStatus.CONFLICT,
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT,
           "Products with stock movements cannot be deleted; keep them and adjust the stock instead");
     }
     products.delete(p);
@@ -200,14 +230,22 @@ public class ProductController {
   }
 
   @PostMapping("/{sku}/stock-adjustments")
-  public ApiResponse<StockMovementResponse> adjust(@PathVariable String sku,
-      @RequestBody StockAdjustmentRequest request) {
+  public ApiResponse<StockMovementResponse> adjust(
+      @PathVariable String sku, @RequestBody StockAdjustmentRequest request) {
     if (request == null || request.delta() == null) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "delta is required");
     }
     StockMovement movement = inventory.adjust(sku, request.delta(), request.note());
-    return ApiResponse.success(new StockMovementResponse(movement.id, movement.skuSnapshot, movement.delta,
-        movement.balanceAfter, movement.movementType, movement.reference, movement.note, movement.createdAt));
+    return ApiResponse.success(
+        new StockMovementResponse(
+            movement.id,
+            movement.skuSnapshot,
+            movement.delta,
+            movement.balanceAfter,
+            movement.movementType,
+            movement.reference,
+            movement.note,
+            movement.createdAt));
   }
 
   private ProductManagementResponse toView(Product p, long orderCount) {
