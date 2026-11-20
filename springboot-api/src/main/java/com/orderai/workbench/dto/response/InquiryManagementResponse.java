@@ -1,6 +1,7 @@
 package com.orderai.workbench.dto.response;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.orderai.workbench.entity.Inquiry;
 import java.time.LocalDateTime;
 
 /**
@@ -19,4 +20,25 @@ public record InquiryManagementResponse(
     @JsonProperty("needs_human_review") Boolean needsHumanReview,
     @JsonProperty("suggested_reply") String suggestedReply,
     @JsonProperty("analysis_source") String analysisSource,
-    @JsonProperty("created_at") LocalDateTime createdAt) {}
+    @JsonProperty("created_at") LocalDateTime createdAt) {
+  /**
+   * EN: Single mapping used by both the controller and the service, so the old PUT path and the new
+   * manual-handling path return exactly the same management view.
+   *
+   * <p>中文：Controller 与 Service 共用此映射，确保旧 PUT 与新人工处理接口返回完全相同的管理视图。
+   */
+  public static InquiryManagementResponse from(Inquiry inquiry) {
+    return new InquiryManagementResponse(
+        inquiry.id,
+        inquiry.customerEmail,
+        inquiry.subject,
+        inquiry.body,
+        inquiry.category,
+        inquiry.aiCategory,
+        inquiry.confidence,
+        inquiry.needsHumanReview,
+        inquiry.suggestedReply,
+        inquiry.analysisSource,
+        inquiry.createdAt);
+  }
+}

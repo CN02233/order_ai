@@ -2,8 +2,10 @@ package com.orderai.workbench.controller;
 
 import com.orderai.workbench.api.ApiResponse;
 import com.orderai.workbench.dto.request.InquiryCreateRequest;
+import com.orderai.workbench.dto.request.InquiryHandlingUpdateRequest;
 import com.orderai.workbench.dto.request.InquiryStatusUpdateRequest;
 import com.orderai.workbench.dto.request.InquiryUpdateRequest;
+import com.orderai.workbench.dto.response.InquiryHandlingResponse;
 import com.orderai.workbench.dto.response.InquiryManagementResponse;
 import com.orderai.workbench.dto.response.InquiryResponse;
 import com.orderai.workbench.dto.response.InquiryStatusResponse;
@@ -105,24 +107,10 @@ public class InquiryController {
   @PutMapping("/{id}")
   public ApiResponse<InquiryManagementResponse> update(
       @PathVariable long id, @RequestBody InquiryUpdateRequest input) {
-    Inquiry inquiry =
-        inquiries
-            .findById(id)
-            .orElseThrow(
-                () -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Inquiry not found"));
-    if (input.customerEmail() != null) {
-      inquiry.customerEmail = input.customerEmail();
-    }
-    if (input.subject() != null) {
-      inquiry.subject = input.subject();
-    }
-    if (input.body() != null) {
-      inquiry.body = input.body();
-    }
-    if (input.category() != null) {
-      inquiry.category = input.category();
-    }
-    return ApiResponse.success(toView(inquiries.save(inquiry)));
+    // EN: The controller only binds and wraps. Category edits are forced through the service so the
+    // old PUT path cannot bypass HUMAN source marking or handling history.
+    // 中文：Controller 只负责绑定与包装。分类修改必须走 Service，旧 PUT 不能绕过 HUMAN 来源标记与处理历史。
+    return ApiResponse.success(service.update(id, input));
   }
 
   /**
@@ -141,6 +129,19 @@ public class InquiryController {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Request body must not be null");
     }
     return ApiResponse.success(service.changeStatus(id, input.status()));
+  }
+
+  /**
+   * EN: Manual handling endpoint. All validation, source marking, optimistic locking and history
+   * writes live in the service; this method only binds the request and wraps the result.
+   *
+   * <p>中文：人工处理接口。校验、来源标记、乐观锁与历史写入全部在 Service；此处只绑定请求并包装结果。
+   */
+  @PatchMapping("/{id}/handling")
+  public ApiResponse<InquiryHandlingResponse> applyManualHandling(
+      @PathVariable long id,
+      @RequestBody(required = false) InquiryHandlingUpdateRequest input) {
+    return ApiResponse.success(service.applyManualHandling(id, input));
   }
 
   @DeleteMapping("/{id}")

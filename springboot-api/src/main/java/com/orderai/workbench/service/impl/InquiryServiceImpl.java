@@ -4,7 +4,11 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.orderai.workbench.dto.InquiryAnalysisRequest;
+import com.orderai.workbench.dto.request.InquiryHandlingUpdateRequest;
+import com.orderai.workbench.dto.request.InquiryUpdateRequest;
 import com.orderai.workbench.dto.response.InquiryAnalysisResponse;
+import com.orderai.workbench.dto.response.InquiryHandlingResponse;
+import com.orderai.workbench.dto.response.InquiryManagementResponse;
 import com.orderai.workbench.dto.response.InquiryResponse;
 import com.orderai.workbench.dto.response.InquiryStatusResponse;
 import com.orderai.workbench.entity.Inquiry;
@@ -23,8 +27,10 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -53,6 +59,20 @@ public class InquiryServiceImpl implements InquiryService {
       Set.of("ORDER_QUERY", "PRODUCT_INQUIRY", "REFUND", "COMPLAINT", "OTHER");
   private static final Set<String> ALLOWED_ANALYSIS_SOURCES = Set.of("AI", "RULE_BASED");
   private static final Set<String> REVIEW_CATEGORIES = Set.of("REFUND", "COMPLAINT", "OTHER");
+
+  // EN: Fixed priority whitelist and field-source tokens. HUMAN wins over any later AI analysis.
+  // 中文：固定优先级白名单与字段来源标记。HUMAN 优先级高于后续任何 AI 分析结果。
+  private static final Set<String> ALLOWED_PRIORITIES =
+      Set.of("LOW", "MEDIUM", "HIGH", "URGENT");
+  private static final String SOURCE_AI = "AI";
+  private static final String SOURCE_HUMAN = "HUMAN";
+  private static final String ACTION_MANUAL_UPDATE = "MANUAL_UPDATE";
+
+  // EN: Request-size guards. 100 matches handled_by's DB column; 2000 is a deliberate API cap for
+  // a free-text note stored as TEXT. 中文：请求体大小保护。100 与 handled_by 数据库列一致；备注虽存 TEXT，
+  // 接口仍主动限制为 2000 字符。
+  private static final int MAX_HANDLED_BY_LENGTH = 100;
+  private static final int MAX_NOTE_LENGTH = 2000;
 
   // EN: The five business statuses and their complete transition table. A status absent from the
   // map or a target absent from the value set is rejected; there is no implicit "allow anything".
@@ -333,6 +353,233 @@ public class InquiryServiceImpl implements InquiryService {
   }
 
   /**
+   * EN: Apply partial manual handling. Validation happens before any write; only genuinely changed
+   * business fields enter the JSON snapshot. A no-op returns without saving, so neither version nor
+   * history moves. State, source markers and history share one transaction through flushWithHistory.
+   *
+   * <p>中文：应用人工部分更新。所有校验先于写库；只有真实变化的业务字段进入 JSON 快照。无变化时直接返回，
+   * version 与历史都不动。状态、来源标记与历史由 flushWithHistory 在同一事务中提交。
+   */
+  @Override
+  @Transactional
+  public InquiryHandlingResponse applyManualHandling(
+      long id, InquiryHandlingUpdateRequest request) {
+    Inquiry inquiry = loadInquiry(id);
+    if (request == null) {
+      throw badRequest("Request body must not be null");
+    }
+
+    String requestedCategory = request.category();
+    String requestedPriority = request.priority();
+    // EN: Trimmed blanks mean "not supplied", never "clear the stored value".
+    // 中文：去空白后为空即视为“未提供”，绝不表示清空已存值。
+    String operatorId = trimmedOptional(request.handledBy(), MAX_HANDLED_BY_LENGTH, "handled_by");
+    String note = trimmedOptional(request.note(), MAX_NOTE_LENGTH, "note");
+
+    if (requestedCategory == null
+        && requestedPriority == null
+        && operatorId == null
+        && note == null) {
+      throw badRequest("At least one handling field is required");
+    }
+    validateCategoryIfPresent(requestedCategory);
+    validatePriorityIfPresent(requestedPriority);
+
+    Map<String, Object> oldValues = new LinkedHashMap<>();
+    Map<String, Object> newValues = new LinkedHashMap<>();
+    boolean changed = false;
+    boolean handlingInfoChanged = false;
+
+    if (requestedCategory != null && !Objects.equals(inquiry.category, requestedCategory)) {
+      putChange(oldValues, newValues, "category", inquiry.category, requestedCategory);
+      inquiry.category = requestedCategory;
+      inquiry.categorySource = SOURCE_HUMAN;
+      changed = true;
+    }
+    if (requestedPriority != null && !Objects.equals(inquiry.priority, requestedPriority)) {
+      putChange(oldValues, newValues, "priority", inquiry.priority, requestedPriority);
+      inquiry.priority = requestedPriority;
+      inquiry.prioritySource = SOURCE_HUMAN;
+      changed = true;
+    }
+    if (operatorId != null && !Objects.equals(inquiry.handledBy, operatorId)) {
+      putChange(oldValues, newValues, "handled_by", inquiry.handledBy, operatorId);
+      inquiry.handledBy = operatorId;
+      changed = true;
+      handlingInfoChanged = true;
+    }
+    if (note != null && !Objects.equals(inquiry.handlingNote, note)) {
+      putChange(oldValues, newValues, "note", inquiry.handlingNote, note);
+      inquiry.handlingNote = note;
+      changed = true;
+      handlingInfoChanged = true;
+    }
+    if (handlingInfoChanged) {
+      inquiry.handledAt = LocalDateTime.now();
+    }
+    if (!changed) {
+      return toHandlingResponse(inquiry, false);
+    }
+
+    Inquiry saved = flushWithHistory(inquiry, oldValues, newValues, operatorId, note);
+    return toHandlingResponse(saved, true);
+  }
+
+  /**
+   * EN: Legacy PUT compatibility. customer_email/subject/body keep their old behavior and are NOT
+   * copied into handling history; a category edit, however, must set HUMAN source and leave history
+   * just like the new endpoint. The controller no longer mutates the entity itself.
+   *
+   * <p>中文：兼容旧 PUT。customer_email/subject/body 保持旧行为且不写入处理历史；但分类修改必须和新接口一样
+   * 设置 HUMAN 来源并留下历史。Controller 不再直接修改实体。
+   */
+  @Override
+  @Transactional
+  public InquiryManagementResponse update(long id, InquiryUpdateRequest request) {
+    Inquiry inquiry = loadInquiry(id);
+    if (request == null) {
+      throw badRequest("Request body must not be null");
+    }
+
+    Map<String, Object> oldValues = new LinkedHashMap<>();
+    Map<String, Object> newValues = new LinkedHashMap<>();
+    boolean changed = false;
+
+    if (request.customerEmail() != null
+        && !Objects.equals(inquiry.customerEmail, request.customerEmail())) {
+      inquiry.customerEmail = request.customerEmail();
+      changed = true;
+    }
+    if (request.subject() != null && !Objects.equals(inquiry.subject, request.subject())) {
+      inquiry.subject = request.subject();
+      changed = true;
+    }
+    if (request.body() != null && !Objects.equals(inquiry.body, request.body())) {
+      inquiry.body = request.body();
+      changed = true;
+    }
+    if (request.category() != null) {
+      validateCategoryIfPresent(request.category());
+      if (!Objects.equals(inquiry.category, request.category())) {
+        putChange(oldValues, newValues, "category", inquiry.category, request.category());
+        inquiry.category = request.category();
+        inquiry.categorySource = SOURCE_HUMAN;
+        changed = true;
+      }
+    }
+    if (!changed) {
+      return InquiryManagementResponse.from(inquiry);
+    }
+
+    Inquiry saved = flushWithHistory(inquiry, oldValues, newValues, null, null);
+    return InquiryManagementResponse.from(saved);
+  }
+
+  private Inquiry loadInquiry(long id) {
+    return repo.findById(id)
+        .orElseThrow(
+            () -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Inquiry not found"));
+  }
+
+  /**
+   * EN: One transaction boundary for every manual write. saveAndFlush forces the optimistic-lock
+   * check before history insert; a history failure therefore rolls back the inquiry fields too.
+   *
+   * <p>中文：所有人工写入共用这一事务边界。saveAndFlush 让乐观锁检查先于历史插入发生，因此历史写入失败会一并回滚
+   * 咨询字段。
+   */
+  private Inquiry flushWithHistory(
+      Inquiry inquiry,
+      Map<String, Object> oldValues,
+      Map<String, Object> newValues,
+      String operatorId,
+      String note) {
+    try {
+      Inquiry saved = repo.saveAndFlush(inquiry);
+      if (!oldValues.isEmpty()) {
+        InquiryHandlingRecord record = new InquiryHandlingRecord();
+        record.inquiry = saved;
+        record.operatorId = operatorId;
+        record.actionType = ACTION_MANUAL_UPDATE;
+        record.oldValue = toJson(oldValues);
+        record.newValue = toJson(newValues);
+        record.note = note;
+        handlingRecords.saveAndFlush(record);
+      }
+      return saved;
+    } catch (ObjectOptimisticLockingFailureException conflict) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT, "Inquiry was modified concurrently");
+    }
+  }
+
+  private static void putChange(
+      Map<String, Object> oldValues,
+      Map<String, Object> newValues,
+      String field,
+      Object oldValue,
+      Object newValue) {
+    oldValues.put(field, oldValue);
+    newValues.put(field, newValue);
+  }
+
+  private static String trimmedOptional(String value, int maxLength, String field) {
+    if (value == null) {
+      return null;
+    }
+    String trimmed = value.trim();
+    if (trimmed.isEmpty()) {
+      return null;
+    }
+    if (trimmed.length() > maxLength) {
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, "Field " + field + " is too long");
+    }
+    return trimmed;
+  }
+
+  private void validateCategoryIfPresent(String category) {
+    if (category != null && !ALLOWED_CATEGORIES.contains(category)) {
+      throw badRequest("Invalid inquiry category");
+    }
+  }
+
+  private void validatePriorityIfPresent(String priority) {
+    if (priority != null && !ALLOWED_PRIORITIES.contains(priority)) {
+      throw badRequest("Invalid inquiry priority");
+    }
+  }
+
+  private static ResponseStatusException badRequest(String reason) {
+    return new ResponseStatusException(HttpStatus.BAD_REQUEST, reason);
+  }
+
+  private String toJson(Map<String, Object> values) {
+    try {
+      return objectMapper.writeValueAsString(values);
+    } catch (JsonProcessingException failure) {
+      // EN: Only String/Boolean values are serialized; this cannot fail in practice.
+      // 中文：只序列化 String/Boolean，实际不可能失败。
+      throw new IllegalStateException("Cannot serialize handling snapshot", failure);
+    }
+  }
+
+  private static InquiryHandlingResponse toHandlingResponse(
+      Inquiry inquiry, boolean historyWritten) {
+    return new InquiryHandlingResponse(
+        inquiry.id,
+        inquiry.category,
+        inquiry.categorySource,
+        inquiry.priority,
+        inquiry.prioritySource,
+        inquiry.handledBy,
+        inquiry.handledAt,
+        inquiry.handlingNote,
+        inquiry.version == null ? 0L : inquiry.version,
+        inquiry.updatedAt,
+        historyWritten);
+  }
+
+  /**
    * EN: The action recorded for a transition. Entering RESOLVED/CLOSED maps to RESOLVE/CLOSE;
    * reopening a CLOSED inquiry maps to REOPEN; all other legal moves are STATUS_CHANGE.
    * 中文：转换对应的历史动作。进入 RESOLVED/CLOSED 记为 RESOLVE/CLOSE；CLOSED 重新打开记为 REOPEN；其余合法转换为 STATUS_CHANGE。
@@ -417,7 +664,13 @@ public class InquiryServiceImpl implements InquiryService {
   }
 
   private void applyAnalysis(Inquiry inquiry, InquiryAnalysisResponse analysis) {
-    inquiry.category = analysis.category();
+    // EN: HUMAN is authoritative. A later AI analysis may refresh the snapshot and other fields,
+    // but must never overwrite a category a support agent has explicitly maintained.
+    // 中文：HUMAN 具有最高优先级。后续 AI 分析可以刷新快照与其他字段，但绝不能覆盖客服已明确维护的分类。
+    if (!SOURCE_HUMAN.equals(inquiry.categorySource)) {
+      inquiry.category = analysis.category();
+      inquiry.categorySource = SOURCE_AI;
+    }
     inquiry.aiCategory = analysis.category();
     inquiry.confidence = analysis.confidence();
     inquiry.needsHumanReview = analysis.needsHumanReview();

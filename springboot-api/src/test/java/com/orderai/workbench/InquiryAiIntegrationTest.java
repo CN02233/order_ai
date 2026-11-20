@@ -21,6 +21,7 @@ import com.orderai.workbench.dto.response.InquiryAnalysisResponse;
 import com.orderai.workbench.dto.response.InquiryManagementResponse;
 import com.orderai.workbench.dto.response.InquiryResponse;
 import com.orderai.workbench.entity.Inquiry;
+import com.orderai.workbench.entity.InquiryHandlingRecord;
 import com.orderai.workbench.repository.InquiryHandlingRecordRepository;
 import com.orderai.workbench.repository.InquiryRepository;
 import com.orderai.workbench.service.InquiryService;
@@ -399,8 +400,19 @@ class InquiryAiIntegrationTest {
     stored.id = 9L;
     InquiryRepository editRepo = mock(InquiryRepository.class);
     when(editRepo.findById(9L)).thenReturn(Optional.of(stored));
-    when(editRepo.save(any(Inquiry.class))).thenAnswer(invocation -> invocation.getArgument(0));
-    InquiryController controller = new InquiryController(mock(InquiryService.class), editRepo);
+    when(editRepo.saveAndFlush(any(Inquiry.class)))
+        .thenAnswer(invocation -> invocation.getArgument(0));
+    InquiryHandlingRecordRepository editHandlingRecords =
+        mock(InquiryHandlingRecordRepository.class);
+    InquiryServiceImpl editService =
+        new InquiryServiceImpl(
+            editRepo,
+            editHandlingRecords,
+            MAPPER,
+            RestClient.builder(),
+            "http://127.0.0.1:1",
+            3,
+            5);
 
     // EN: Even if a client sends AI fields, the request DTO has nowhere to store them.
     // 中文：即便客户端夹带 AI 字段，请求 DTO 也没有地方保存它们。
@@ -409,9 +421,14 @@ class InquiryAiIntegrationTest {
             "{\"category\":\"COMPLAINT\",\"ai_category\":\"ORDER_QUERY\",\"confidence\":0.01,"
                 + "\"needs_human_review\":false,\"suggested_reply\":\"forged\",\"analysis_source\":\"RULE_BASED\"}",
             InquiryUpdateRequest.class);
-    InquiryManagementResponse view = controller.update(9L, request).data();
+    InquiryManagementResponse view = editService.update(9L, request);
 
+    ArgumentCaptor<InquiryHandlingRecord> recordCaptor =
+        ArgumentCaptor.forClass(InquiryHandlingRecord.class);
+    verify(editHandlingRecords).saveAndFlush(recordCaptor.capture());
+    assertThat(recordCaptor.getValue().actionType).isEqualTo("MANUAL_UPDATE");
     assertThat(stored.category).isEqualTo("COMPLAINT");
+    assertThat(stored.categorySource).isEqualTo("HUMAN");
     assertThat(stored.aiCategory).isEqualTo("REFUND");
     assertThat(stored.confidence).isEqualTo(0.88);
     assertThat(stored.needsHumanReview).isTrue();
