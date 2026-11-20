@@ -38,22 +38,29 @@ class InquiryUniqueIndexDbTest {
     String key = "db-uq-" + UUID.randomUUID();
 
     inquiries.saveAndFlush(new Inquiry(key, "first@example.com", "subject", "body", null));
+    try {
+      assertThat(inquiries.findByIdempotencyKey(key)).isPresent();
+      assertThatThrownBy(
+              () ->
+                  inquiries.saveAndFlush(
+                      new Inquiry(key, "second@example.com", "other subject", "other body", null)))
+          .isInstanceOf(DataIntegrityViolationException.class);
 
-    assertThat(inquiries.findByIdempotencyKey(key)).isPresent();
-    assertThatThrownBy(
-            () ->
-                inquiries.saveAndFlush(
-                    new Inquiry(key, "second@example.com", "other subject", "other body", null)))
-        .isInstanceOf(DataIntegrityViolationException.class);
-
-    // EN: The rejected INSERT left exactly one row behind.
-    // 中文：被拒绝的 INSERT 没有留下第二条记录。
-    assertThat(
-            inquiries.findAll().stream()
-                .filter(row -> key.equals(row.idempotencyKey))
-                .count())
-        .isEqualTo(1);
-    inquiries.deleteAllInBatch();
+      // EN: The rejected INSERT left exactly one row behind.
+      // 中文：被拒绝的 INSERT 没有留下第二条记录。
+      assertThat(
+              inquiries.findAll().stream()
+                  .filter(row -> key.equals(row.idempotencyKey))
+                  .count())
+          .isEqualTo(1);
+    } finally {
+      // EN: Delete ONLY rows carrying this test's UUID key, never clear the whole table.
+      //     finally also covers assertion failures and unexpected exceptions, so no test data leaks.
+      // 中文：只删除带本测试 UUID Key 的记录，绝不清空整张表；finally 同时覆盖断言失败与异常路径，保证不留测试数据。
+      inquiries.findAll().stream()
+          .filter(row -> key.equals(row.idempotencyKey))
+          .forEach(inquiries::delete);
+    }
   }
 
   @Test
