@@ -26,6 +26,7 @@ from app.schemas.inquiry import (
     AnalysisSource,
     AnalyzeInquiryRequest,
     InquiryCategory,
+    InquiryPriority,
 )
 from app.services.inquiry_analysis_service import InquiryAnalysisService
 
@@ -41,10 +42,23 @@ REFUND_REQUEST = {
 }
 
 
-def llm_json(category: str, confidence=0.9, reply="Thanks for contacting us.") -> str:
-    """EN: Build a valid model answer. 中文：构造合法的模型返回内容。"""
+def llm_json(
+    category: str,
+    confidence=0.9,
+    reply="Thanks for contacting us.",
+    priority="MEDIUM",
+) -> str:
+    """EN: Build a valid model answer, including the now-required priority.
+
+    中文：构造合法的模型返回内容，包含现已必填的 priority。
+    """
     return json.dumps(
-        {"category": category, "confidence": confidence, "suggested_reply": reply}
+        {
+            "category": category,
+            "priority": priority,
+            "confidence": confidence,
+            "suggested_reply": reply,
+        }
     )
 
 
@@ -245,8 +259,12 @@ def test_existing_endpoint_still_works_with_mocked_llm():
     assert body["suggested_reply"] == "Use the tracking link."
     assert body["analysis_source"] == "AI"
     assert body["error_message"] is None
+    # EN: priority is additive; original fields keep their names and meaning.
+    # 中文：priority 为增量字段；原有字段名与语义保持不变。
+    assert body["priority"] == "MEDIUM"
     assert set(body) == {
         "category",
+        "priority",
         "confidence",
         "needs_human_review",
         "suggested_reply",
@@ -326,3 +344,91 @@ def test_rule_classifier_failure_is_not_swallowed(monkeypatch):
 
     with pytest.raises(RuntimeError, match="rule engine is broken"):
         service.analyze(AnalyzeInquiryRequest(**ORDER_REQUEST))
+
+
+# ---------------------------------------------------------------------------
+# T5: AI priority contract
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("priority", ["LOW", "MEDIUM", "HIGH", "URGENT"])
+def test_llm_returns_valid_priority(priority):
+    """EN: Every allowed priority is accepted on the AI path.
+
+    中文：AI 路径接受全部合法优先级。
+    """
+    response = service_with(
+        llm_json("ORDER_QUERY", priority=priority)
+    ).analyze(AnalyzeInquiryRequest(**ORDER_REQUEST))
+
+    assert response.analysis_source == AnalysisSource.AI
+    assert response.priority == InquiryPriority(priority)
+    assert response.priority.value == priority
+
+
+@pytest.mark.parametrize("priority", ["URGENTLY", "medium", "", 123, None])
+def test_llm_invalid_priority_triggers_rule_fallback(priority):
+    """EN: Illegal or missing priority is an AI failure, never silently MEDIUM.
+
+    中文：非法或缺失优先级一律视为 AI 失败，绝不静默替换为 MEDIUM。
+    """
+    response = service_with(llm_json("ORDER_QUERY", priority=priority)).analyze(
+        AnalyzeInquiryRequest(**ORDER_REQUEST)
+    )
+
+    assert response.analysis_source == AnalysisSource.RULE_BASED
+    assert response.error_message == REASON_INVALID_RESULT
+    assert response.priority is None
+
+
+def test_llm_missing_priority_triggers_rule_fallback():
+    """EN: A model answer with no priority key must fail, not default.
+
+    中文：模型返回缺少 priority 键必须失败，不得使用默认值。
+    """
+    missing = json.dumps(
+        {"category": "ORDER_QUERY", "confidence": 0.8, "suggested_reply": "ok"}
+    )
+    response = service_with(missing).analyze(AnalyzeInquiryRequest(**ORDER_REQUEST))
+
+    assert response.analysis_source == AnalysisSource.RULE_BASED
+    assert response.error_message == REASON_INVALID_RESULT
+    assert response.priority is None
+
+
+def test_llm_invalid_json_triggers_rule_fallback_with_null_priority():
+    response = service_with("not json").analyze(AnalyzeInquiryRequest(**ORDER_REQUEST))
+
+    assert response.analysis_source == AnalysisSource.RULE_BASED
+    assert response.error_message == REASON_INVALID_JSON
+    assert response.priority is None
+
+
+def test_rule_fallback_never_fabricates_priority():
+    """EN: Regardless of the safe failure reason, a RULE_BASED result carries no priority.
+
+    中文：无论安全失败原因为何，RULE_BASED 结果都不携带优先级。
+    """
+    for outcome in (
+        LlmAnalysisError(REASON_API_ERROR),
+        LlmAnalysisError(REASON_TIMEOUT),
+        "broken json",
+        RuntimeError("any sdk failure"),
+    ):
+        response = service_with(outcome).analyze(AnalyzeInquiryRequest(**ORDER_REQUEST))
+        assert response.analysis_source == AnalysisSource.RULE_BASED
+        assert response.priority is None
+
+
+def test_prompt_requires_priority():
+    """EN: The system prompt must demand priority and list the allowed values.
+
+    中文：系统提示词必须要求返回 priority 并列出合法取值。
+    """
+    client = FakeChatClient(llm_json("ORDER_QUERY"))
+    InquiryAnalysisService(GroqLlmAnalyzer(client)).analyze(
+        AnalyzeInquiryRequest(**ORDER_REQUEST)
+    )
+    assert "priority" in client.system_prompt
+    for value in ("LOW", "MEDIUM", "HIGH", "URGENT"):
+        assert value in client.system_prompt
