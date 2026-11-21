@@ -354,11 +354,14 @@ public class InquiryServiceImpl implements InquiryService {
 
   /**
    * EN: Apply partial manual handling. Validation happens before any write; only genuinely changed
-   * business fields enter the JSON snapshot. A no-op returns without saving, so neither version nor
-   * history moves. State, source markers and history share one transaction through flushWithHistory.
+   * business fields enter the JSON snapshot. ANY real field change (category, priority, handled_by,
+   * note) refreshes handled_at; a no-op returns without saving, so handled_at, version and history
+   * all stay untouched. State, source markers and history share one transaction through
+   * flushWithHistory.
    *
-   * <p>中文：应用人工部分更新。所有校验先于写库；只有真实变化的业务字段进入 JSON 快照。无变化时直接返回，
-   * version 与历史都不动。状态、来源标记与历史由 flushWithHistory 在同一事务中提交。
+   * <p>中文：应用人工部分更新。所有校验先于写库；只有真实变化的业务字段进入 JSON 快照。任何真实字段变化
+   * （分类、优先级、处理人、备注）都会刷新 handled_at；无变化时直接返回，handled_at、version 与历史都不动。
+   * 状态、来源标记与历史由 flushWithHistory 在同一事务中提交。
    */
   @Override
   @Transactional
@@ -388,7 +391,6 @@ public class InquiryServiceImpl implements InquiryService {
     Map<String, Object> oldValues = new LinkedHashMap<>();
     Map<String, Object> newValues = new LinkedHashMap<>();
     boolean changed = false;
-    boolean handlingInfoChanged = false;
 
     if (requestedCategory != null && !Objects.equals(inquiry.category, requestedCategory)) {
       putChange(oldValues, newValues, "category", inquiry.category, requestedCategory);
@@ -406,15 +408,15 @@ public class InquiryServiceImpl implements InquiryService {
       putChange(oldValues, newValues, "handled_by", inquiry.handledBy, operatorId);
       inquiry.handledBy = operatorId;
       changed = true;
-      handlingInfoChanged = true;
     }
     if (note != null && !Objects.equals(inquiry.handlingNote, note)) {
       putChange(oldValues, newValues, "note", inquiry.handlingNote, note);
       inquiry.handlingNote = note;
       changed = true;
-      handlingInfoChanged = true;
     }
-    if (handlingInfoChanged) {
+    // EN: Any real field change refreshes the handling time, not just handled_by / note.
+    // 中文：任何真实字段变化都会刷新处理时间，而不仅是处理人或备注变化。
+    if (changed) {
       inquiry.handledAt = LocalDateTime.now();
     }
     if (!changed) {
@@ -427,11 +429,11 @@ public class InquiryServiceImpl implements InquiryService {
 
   /**
    * EN: Legacy PUT compatibility. customer_email/subject/body keep their old behavior and are NOT
-   * copied into handling history; a category edit, however, must set HUMAN source and leave history
-   * just like the new endpoint. The controller no longer mutates the entity itself.
+   * copied into handling history; a category edit, however, must set HUMAN source, leave history and
+   * refresh handled_at just like the new endpoint. The controller no longer mutates the entity itself.
    *
    * <p>中文：兼容旧 PUT。customer_email/subject/body 保持旧行为且不写入处理历史；但分类修改必须和新接口一样
-   * 设置 HUMAN 来源并留下历史。Controller 不再直接修改实体。
+   * 设置 HUMAN 来源、留下历史并刷新 handled_at。Controller 不再直接修改实体。
    */
   @Override
   @Transactional
@@ -444,6 +446,7 @@ public class InquiryServiceImpl implements InquiryService {
     Map<String, Object> oldValues = new LinkedHashMap<>();
     Map<String, Object> newValues = new LinkedHashMap<>();
     boolean changed = false;
+    boolean categoryChanged = false;
 
     if (request.customerEmail() != null
         && !Objects.equals(inquiry.customerEmail, request.customerEmail())) {
@@ -465,7 +468,13 @@ public class InquiryServiceImpl implements InquiryService {
         inquiry.category = request.category();
         inquiry.categorySource = SOURCE_HUMAN;
         changed = true;
+        categoryChanged = true;
       }
+    }
+    // EN: A real manual category edit refreshes handled_at, matching the new PATCH endpoint.
+    // 中文：真实的人工分类修改会刷新 handled_at，与新 PATCH 接口保持一致。
+    if (categoryChanged) {
+      inquiry.handledAt = LocalDateTime.now();
     }
     if (!changed) {
       return InquiryManagementResponse.from(inquiry);

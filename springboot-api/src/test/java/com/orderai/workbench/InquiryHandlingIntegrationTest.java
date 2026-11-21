@@ -18,6 +18,7 @@ import com.orderai.workbench.repository.InquiryRepository;
 import com.orderai.workbench.service.InquiryService;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -508,6 +509,106 @@ class InquiryHandlingIntegrationTest {
     assertThat(reloaded.category).isEqualTo("REFUND");
     assertThat(reloaded.categorySource).isEqualTo("AI");
     assertThat(history(seed.id)).isEmpty();
+  }
+
+  @Test
+  @DisplayName("Category-only manual edit refreshes handled_at")
+  void categoryOnlyChangeRefreshesHandledAt() {
+    Inquiry seed = seed("REFUND", "MEDIUM", "AI");
+    assertThat(seed.handledAt).isNull();
+
+    InquiryHandlingResponse result =
+        service.applyManualHandling(
+            seed.id, new InquiryHandlingUpdateRequest("COMPLAINT", null, null, null));
+
+    Inquiry reloaded = inquiries.findById(seed.id).orElseThrow();
+    assertThat(result.handledAt()).isNotNull();
+    assertThat(reloaded.handledAt).isNotNull();
+  }
+
+  @Test
+  @DisplayName("Priority-only manual edit refreshes handled_at")
+  void priorityOnlyChangeRefreshesHandledAt() {
+    Inquiry seed = seed("REFUND", "MEDIUM", "AI");
+    assertThat(seed.handledAt).isNull();
+
+    InquiryHandlingResponse result =
+        service.applyManualHandling(
+            seed.id, new InquiryHandlingUpdateRequest(null, "HIGH", null, null));
+
+    Inquiry reloaded = inquiries.findById(seed.id).orElseThrow();
+    assertThat(result.handledAt()).isNotNull();
+    assertThat(reloaded.handledAt).isNotNull();
+  }
+
+  @Test
+  @DisplayName("Legacy PUT category edit refreshes handled_at")
+  void legacyPutCategoryEditRefreshesHandledAt() throws Exception {
+    Inquiry seed = seed("REFUND", "MEDIUM", "AI");
+    assertThat(seed.handledAt).isNull();
+
+    mockMvc
+        .perform(
+            put("/api/inquiries/{id}", seed.id)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(Map.of("category", "OTHER"))))
+        .andExpect(status().isOk());
+
+    Inquiry reloaded = inquiries.findById(seed.id).orElseThrow();
+    assertThat(reloaded.handledAt).isNotNull();
+  }
+
+  @Test
+  @DisplayName("No-op manual request leaves handled_at at its previous value")
+  void noOpRequestKeepsHandledAtUnchanged() {
+    Inquiry seed = seed("COMPLAINT", "HIGH", "HUMAN");
+    LocalDateTime original = LocalDateTime.of(2020, 1, 1, 12, 0);
+    seed.handledAt = original;
+    inquiries.saveAndFlush(seed);
+
+    InquiryHandlingResponse result =
+        service.applyManualHandling(
+            seed.id, new InquiryHandlingUpdateRequest("COMPLAINT", "HIGH", null, null));
+
+    Inquiry reloaded = inquiries.findById(seed.id).orElseThrow();
+    assertThat(result.historyWritten()).isFalse();
+    assertThat(reloaded.handledAt).isEqualTo(original);
+  }
+
+  @Test
+  @DisplayName("History insert failure rolls back handled_at with the rest of the transaction")
+  void historyFailureRollsBackHandledAt() {
+    Inquiry seed = seed("REFUND", "MEDIUM", "AI");
+    LocalDateTime original = LocalDateTime.of(2020, 1, 1, 12, 0);
+    seed.handledAt = original;
+    inquiries.saveAndFlush(seed);
+    String constraintName =
+        "CHK_FAIL_HANDLED_AT_" + UUID.randomUUID().toString().replace("-", "");
+
+    try {
+      jdbc.update(
+          "ALTER TABLE inquiry_handling_record ADD CONSTRAINT "
+              + constraintName
+              + " CHECK (inquiry_id <> "
+              + seed.id
+              + ")");
+
+      assertThatThrownBy(
+              () ->
+                  service.applyManualHandling(
+                      seed.id,
+                      new InquiryHandlingUpdateRequest(
+                          "COMPLAINT", null, "support-agent-01", "note")))
+          .isInstanceOf(DataIntegrityViolationException.class);
+
+      Inquiry reloaded = inquiries.findById(seed.id).orElseThrow();
+      assertThat(reloaded.handledAt).isEqualTo(original);
+      assertThat(reloaded.category).isEqualTo("REFUND");
+      assertThat(history(seed.id)).isEmpty();
+    } finally {
+      jdbc.update(
+          "ALTER TABLE inquiry_handling_record DROP CONSTRAINT IF EXISTS " + constraintName);
+    }
   }
 
   /** EN: Record either outcome without swallowing it. 中文：记录任一结果，绝不吞掉异常。 */
