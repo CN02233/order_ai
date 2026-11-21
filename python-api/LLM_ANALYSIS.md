@@ -94,8 +94,9 @@ POST /analyze-inquiry
 | `suggested_reply` | `Optional[str]` | `None` | 建议回复；降级时一定为 `None` |
 | `analysis_source` | `AnalysisSource` | `RULE_BASED` | 新增字段，默认值保证旧构造方式兼容 |
 | `error_message` | `Optional[str]` | `None` | 新增字段；仅 AI 失败时非空 |
+| `priority` | `Optional[InquiryPriority]` | `None` | T5 新增；仅 AI 路径返回合法优先级，RULE_BASED 降级恒为 `None`，绝不伪造 |
 
-前四个字段是原有契约，名称与语义未变；后两个字段为增量扩展。
+前四个字段是原有契约，名称与语义未变；其余为增量扩展。`InquiryPriority` 允许值：`LOW` / `MEDIUM` / `HIGH` / `URGENT`。
 
 ---
 
@@ -175,6 +176,7 @@ POST /analyze-inquiry
 | 字段 | 类型 | 约束 |
 | --- | --- | --- |
 | `category` | `InquiryCategory` | 只能是五种合法分类 |
+| `priority` | `InquiryPriority` | **必填**且只能是 `LOW`/`MEDIUM`/`HIGH`/`URGENT`；缺失/非法视为 AI 失败，绝不静默降级为 MEDIUM |
 | `confidence` | `float` | `Field(ge=0.0, le=1.0)` |
 | `suggested_reply` | `str \| None` | **必填**（无默认值），缺字段视为 AI 失败 |
 

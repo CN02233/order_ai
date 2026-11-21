@@ -17,7 +17,7 @@ from app.infrastructure.llm.errors import (
     LlmAnalysisError,
 )
 from app.infrastructure.llm.prompts import SYSTEM_PROMPT, build_user_prompt
-from app.schemas.inquiry import InquiryCategory
+from app.schemas.inquiry import InquiryCategory, InquiryPriority
 
 
 class LlmAnalysis(BaseModel):
@@ -27,6 +27,10 @@ class LlmAnalysis(BaseModel):
     """
 
     category: InquiryCategory
+    # EN: Required and enum-validated: a missing or illegal priority is an AI failure and must
+    #     trigger rule fallback, never be silently replaced by MEDIUM.
+    # 中文：必填且按枚举校验：缺失或非法优先级视为 AI 失败，必须触发规则降级，绝不静默替换为 MEDIUM。
+    priority: InquiryPriority
     confidence: float = Field(ge=0.0, le=1.0)  # EN: 0..1 only. 中文：只允许 0 到 1。
     # EN: Required on purpose: an incomplete answer must trigger fallback,
     # not silently become None. 中文：故意设为必填：不完整的模型回答必须触发降级，而非静默变成 None。
@@ -57,8 +61,10 @@ class GroqLlmAnalyzer:
         try:
             return LlmAnalysis.model_validate(payload)
         except ValidationError:
-            # EN: Covers missing fields, unknown categories and bad confidence.
-            # 中文：覆盖字段缺失、非法分类和 confidence 越界等情况。
+            # EN: Covers missing fields, unknown categories, illegal/missing priority and bad
+            #     confidence. A RULE_BASED fallback never fabricates a priority.
+            # 中文：覆盖字段缺失、非法分类、非法/缺失优先级和 confidence 越界等情况。
+            #     规则降级绝不伪造优先级。
             raise LlmAnalysisError(REASON_INVALID_RESULT) from None
 
     @staticmethod

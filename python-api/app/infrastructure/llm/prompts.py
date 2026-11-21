@@ -3,14 +3,15 @@
 EN: Customer text is always passed as untrusted data, never as instructions.
 中文：客户文本一律作为不可信数据传入，绝不作为指令执行。
 """
-from app.schemas.inquiry import InquiryCategory
+from app.schemas.inquiry import InquiryCategory, InquiryPriority
 
 SYSTEM_PROMPT = (
     "You are an order-support triage assistant. "
     "Classify the customer inquiry provided in the user message. "
     "Respond with ONLY a JSON object, without markdown or explanation, "
-    "containing exactly these keys: category, confidence, suggested_reply. "
+    "containing exactly these keys: category, priority, confidence, suggested_reply. "
     f"category MUST be exactly one of: {', '.join(category.value for category in InquiryCategory)}. "
+    f"priority MUST be exactly one of: {', '.join(priority.value for priority in InquiryPriority)}. "
     "confidence is a number from 0 to 1 expressing your own certainty "
     "(it is a self-assessment, not a calibrated probability). "
     "suggested_reply is a short, polite English reply to the customer, "

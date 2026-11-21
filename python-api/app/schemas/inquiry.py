@@ -26,6 +26,18 @@ class AnalysisSource(str, Enum):
     RULE_BASED = "RULE_BASED"
 
 
+class InquiryPriority(str, Enum):
+    """EN: The only priorities an AI analysis may return.
+
+    中文：AI 分析唯一允许返回的优先级集合。共享给 LLM 输出模型与 API 响应，保证两端校验一致。
+    """
+
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+    URGENT = "URGENT"
+
+
 class AnalyzeInquiryRequest(BaseModel):
     # EN: Original request fields; unchanged on purpose. 中文：原有请求字段，刻意保持不变。
     customer_email: EmailStr
@@ -54,3 +66,9 @@ class AnalyzeInquiryResponse(BaseModel):
     analysis_source: AnalysisSource = AnalysisSource.RULE_BASED
     # EN: Non-null only on AI failure. 中文：仅在 AI 失败时非空。
     error_message: Optional[str] = None
+    # EN: AI-judged priority. Optional and defaulted to None on purpose: a RULE_BASED fallback has
+    #     no evidence for a priority and MUST NOT fabricate one. Adding a field keeps older callers
+    #     working because they simply ignore it.
+    # 中文：AI 判断的优先级。刻意设为可选且默认 None：RULE_BASED 降级没有优先级证据，绝不能伪造一个。
+    #     新增为增量字段，旧调用方忽略它即可继续工作。
+    priority: Optional[InquiryPriority] = None

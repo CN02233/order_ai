@@ -5,15 +5,18 @@ import com.orderai.workbench.dto.request.InquiryCreateRequest;
 import com.orderai.workbench.dto.request.InquiryHandlingUpdateRequest;
 import com.orderai.workbench.dto.request.InquiryStatusUpdateRequest;
 import com.orderai.workbench.dto.request.InquiryUpdateRequest;
+import com.orderai.workbench.dto.response.AnalysisHistoryItem;
 import com.orderai.workbench.dto.response.InquiryHandlingResponse;
 import com.orderai.workbench.dto.response.InquiryManagementResponse;
 import com.orderai.workbench.dto.response.InquiryResponse;
 import com.orderai.workbench.dto.response.InquiryStatusResponse;
+import com.orderai.workbench.dto.response.ReanalyzeResponse;
 import com.orderai.workbench.entity.Inquiry;
 import com.orderai.workbench.repository.InquiryRepository;
 import com.orderai.workbench.service.InquiryService;
 import java.time.LocalDateTime;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -142,6 +145,24 @@ public class InquiryController {
       @PathVariable long id,
       @RequestBody(required = false) InquiryHandlingUpdateRequest input) {
     return ApiResponse.success(service.applyManualHandling(id, input));
+  }
+
+  /**
+   * EN: Re-run AI analysis for an inquiry, appending a new history version. Business status and
+   * human-owned fields are untouched. 中文：重新执行 AI 分析并追加新历史版本；业务状态与人工字段不受影响。
+   */
+  @PostMapping("/{id}/reanalyze")
+  public ApiResponse<ReanalyzeResponse> reanalyze(@PathVariable long id) {
+    return ApiResponse.success(service.reanalyze(id));
+  }
+
+  /**
+   * EN: Full analysis history, oldest first, with is_current from current_analysis_id.
+   * 中文：完整分析历史，按版本升序，is_current 由 current_analysis_id 推导。
+   */
+  @GetMapping("/{id}/analyses")
+  public ApiResponse<List<AnalysisHistoryItem>> analyses(@PathVariable long id) {
+    return ApiResponse.success(service.listAnalyses(id));
   }
 
   @DeleteMapping("/{id}")

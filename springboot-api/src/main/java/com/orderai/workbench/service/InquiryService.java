@@ -2,10 +2,13 @@ package com.orderai.workbench.service;
 
 import com.orderai.workbench.dto.request.InquiryHandlingUpdateRequest;
 import com.orderai.workbench.dto.request.InquiryUpdateRequest;
+import com.orderai.workbench.dto.response.AnalysisHistoryItem;
 import com.orderai.workbench.dto.response.InquiryHandlingResponse;
 import com.orderai.workbench.dto.response.InquiryManagementResponse;
 import com.orderai.workbench.dto.response.InquiryResponse;
 import com.orderai.workbench.dto.response.InquiryStatusResponse;
+import com.orderai.workbench.dto.response.ReanalyzeResponse;
+import java.util.List;
 import java.util.Map;
 
 public interface InquiryService {
@@ -30,4 +33,17 @@ public interface InquiryService {
    * 必须遵守与新接口相同的 HUMAN 来源与历史规则。
    */
   InquiryManagementResponse update(long id, InquiryUpdateRequest request);
+
+  /**
+   * EN: Re-run AI analysis for an existing inquiry using the same pipeline as first analysis,
+   * appending a new history version. Never changes the business status or human-owned fields.
+   * 中文：对已有咨询重新执行 AI 分析，与首次分析共用同一流水线，追加新历史版本；绝不改动业务状态或人工维护字段。
+   */
+  ReanalyzeResponse reanalyze(long id);
+
+  /**
+   * EN: Full analysis timeline for an inquiry, oldest first, with is_current derived from the
+   * inquiry's current_analysis_id. 中文：咨询的完整分析时间线，按版本升序，is_current 由 current_analysis_id 推导。
+   */
+  List<AnalysisHistoryItem> listAnalyses(long id);
 }

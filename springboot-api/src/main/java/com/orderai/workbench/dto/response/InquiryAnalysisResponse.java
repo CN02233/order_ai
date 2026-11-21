@@ -18,6 +18,10 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record InquiryAnalysisResponse(
     String category,
+    // EN: Nullable: a RULE_BASED fallback has no priority evidence. AI results carry a whitelisted
+    // value. An illegal/missing priority on an AI result is rejected before any analysis is written.
+    // 中文：可空：RULE_BASED 降级没有优先级证据。AI 结果带白名单值；AI 结果中非法/缺失优先级会在写分析前被拒绝。
+    @JsonProperty("priority") String priority,
     Double confidence,
     @JsonProperty("needs_human_review") Boolean needsHumanReview,
     @JsonProperty("suggested_reply") String suggestedReply,

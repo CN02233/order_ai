@@ -6,15 +6,20 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.orderai.workbench.dto.InquiryAnalysisRequest;
 import com.orderai.workbench.dto.request.InquiryHandlingUpdateRequest;
 import com.orderai.workbench.dto.request.InquiryUpdateRequest;
+import com.orderai.workbench.dto.response.AnalysisHistoryItem;
 import com.orderai.workbench.dto.response.InquiryAnalysisResponse;
 import com.orderai.workbench.dto.response.InquiryHandlingResponse;
 import com.orderai.workbench.dto.response.InquiryManagementResponse;
 import com.orderai.workbench.dto.response.InquiryResponse;
 import com.orderai.workbench.dto.response.InquiryStatusResponse;
+import com.orderai.workbench.dto.response.ReanalyzeResponse;
 import com.orderai.workbench.entity.Inquiry;
+import com.orderai.workbench.entity.InquiryAnalysis;
 import com.orderai.workbench.entity.InquiryHandlingRecord;
 import com.orderai.workbench.repository.InquiryHandlingRecordRepository;
 import com.orderai.workbench.repository.InquiryRepository;
+import com.orderai.workbench.service.AnalysisRunService;
+import com.orderai.workbench.service.AnalysisRunService.AnalysisAttempt;
 import com.orderai.workbench.service.InquiryService;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -36,6 +41,7 @@ import java.util.Set;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpHeaders;
@@ -106,6 +112,7 @@ public class InquiryServiceImpl implements InquiryService {
 
   private final InquiryRepository repo;
   private final InquiryHandlingRecordRepository handlingRecords;
+  private final AnalysisRunService analysisRuns;
   private final RestClient pythonClient;
   private final ObjectMapper objectMapper;
   private final String aiBaseUrl;
@@ -123,8 +130,31 @@ public class InquiryServiceImpl implements InquiryService {
       // 中文：超时可配置；默认值保证 Java 等待时间长于 Python 的 15 秒 LLM 超时，避免 Java 先超时。
       @Value("${app.ai.connect-timeout-seconds:3}") long connectTimeoutSeconds,
       @Value("${app.ai.read-timeout-seconds:20}") long readTimeoutSeconds) {
+    this(
+        r,
+        handlingRecords,
+        AnalysisRunService.disabled(),
+        objectMapper,
+        restClientBuilder,
+        url,
+        connectTimeoutSeconds,
+        readTimeoutSeconds);
+  }
+
+  /** EN: Spring constructor with the real analysis-history service. 中文：Spring 构造器，注入真实分析历史服务。 */
+  @Autowired
+  public InquiryServiceImpl(
+      InquiryRepository r,
+      InquiryHandlingRecordRepository handlingRecords,
+      AnalysisRunService analysisRuns,
+      ObjectMapper objectMapper,
+      RestClient.Builder restClientBuilder,
+      @Value("${app.ai.base-url:http://127.0.0.1:8000}") String url,
+      @Value("${app.ai.connect-timeout-seconds:3}") long connectTimeoutSeconds,
+      @Value("${app.ai.read-timeout-seconds:20}") long readTimeoutSeconds) {
     repo = r;
     this.handlingRecords = handlingRecords;
+    this.analysisRuns = analysisRuns;
     this.objectMapper = objectMapper;
     this.aiBaseUrl = url.replaceAll("/+$", "");
     this.connectTimeout = Duration.ofSeconds(connectTimeoutSeconds);
@@ -211,7 +241,113 @@ public class InquiryServiceImpl implements InquiryService {
     }
     log.info("Inquiry original persisted: inquiryId={}", original.id);
 
-    // Step 4: delegate analysis to Python. No database transaction is held across this HTTP call.
+    // Step 4-5: run the SAME analysis pipeline used by reanalyze(). Every attempt (including the
+    // first one) owns an inquiry_analysis history row and a fresh version. The raw inquiry stays
+    // committed whether the analysis succeeds or fails.
+    // 中文：走与重新分析完全相同的分析流水线。每次尝试（包括首次）都有一条 inquiry_analysis 历史与新版本号；
+    // 无论分析成功或失败，原始咨询都已提交且不会回滚。
+    AnalysisExecution execution = executeAnalysis(original, email, subject, body);
+    if (execution.failureCode() != null) {
+      log.warn("Inquiry analysis failed: inquiryId={} code={}", original.id, execution.failureCode());
+      return failedResponse(original.id, execution.failureCode());
+    }
+    Inquiry updated = repo.findById(original.id).orElse(original);
+    log.info(
+        "Inquiry analysis persisted: inquiryId={} category={} analysisSource={}",
+        updated.id,
+        updated.category,
+        updated.analysisSource);
+    return successResponse(updated);
+  }
+
+  /**
+   * EN: Outcome of one analysis execution. Exactly one of analysis / failureCode is set. The row is
+   * the persisted history record (null only in the legacy disabled seam). 中文：一次分析执行的结果。analysis 与
+   * failureCode 必有其一。row 为落库的历史记录（仅旧版禁用接缝中为 null）。
+   */
+  private record AnalysisExecution(
+      InquiryAnalysisResponse analysis,
+      String failureCode,
+      Long analysisId,
+      Integer version,
+      InquiryAnalysis row) {
+
+    static AnalysisExecution success(
+        InquiryAnalysisResponse analysis, Long analysisId, Integer version, InquiryAnalysis row) {
+      return new AnalysisExecution(analysis, null, analysisId, version, row);
+    }
+
+    static AnalysisExecution failure(
+        String code, Long analysisId, Integer version, InquiryAnalysis row) {
+      return new AnalysisExecution(null, code, analysisId, version, row);
+    }
+  }
+
+  /**
+   * EN: The single analysis pipeline shared by first analysis and reanalysis. When the history
+   * service is enabled: begin a PROCESSING attempt in a short locked transaction, call Python with
+   * NO transaction held, then finalize SUCCESS/FAILED in a second short locked transaction. When
+   * disabled (legacy unit tests) it reproduces the original behavior exactly: direct call, apply to
+   * the inquiry row and save, no history table writes.
+   *
+   * <p>中文：首次分析与重新分析共用的唯一分析流水线。启用历史服务时：在短加锁事务中创建 PROCESSING 尝试，不持有事务地调用
+   * Python，再在第二个短加锁事务中定稿 SUCCESS/FAILED。禁用时（旧单元测试）完全复现原行为：直接调用、写入咨询行并保存、
+   * 不写历史表。
+   */
+  private AnalysisExecution executeAnalysis(
+      Inquiry inquiry, String email, String subject, String body) {
+    if (!analysisRuns.isEnabled()) {
+      return executeLegacyAnalysis(inquiry, email, subject, body);
+    }
+
+    AnalysisAttempt attempt = analysisRuns.begin(inquiry.id);
+    InquiryAnalysisResponse analysis;
+    try {
+      analysis = analyzeAndValidate(email, subject, body);
+    } catch (ResponseStatusException failure) {
+      String code = classifyAnalysisFailure(failure);
+      InquiryAnalysis row = analysisRuns.completeFailure(inquiry.id, attempt, code);
+      return AnalysisExecution.failure(
+          code, attempt.analysisId(), attempt.version(), row);
+    }
+
+    try {
+      InquiryAnalysis row = analysisRuns.completeSuccess(inquiry.id, attempt, analysis);
+      return AnalysisExecution.success(
+          analysis, attempt.analysisId(), attempt.version(), row);
+    } catch (RuntimeException dbFailure) {
+      // EN: A DB failure finalizing the result must not leave a half-success row. completeSuccess is
+      // one transaction, so it rolled itself back; mark the attempt FAILED in a fresh transaction.
+      // 中文：定稿结果时的数据库故障不能留下半成功记录。completeSuccess 是单事务，已经自我回滚；在新事务中把尝试标记为 FAILED。
+      log.error(
+          "Analysis finalize failed: inquiryId={} errorType={}",
+          inquiry.id,
+          dbFailure.getClass().getSimpleName());
+      InquiryAnalysis row = analysisRuns.completeFailure(inquiry.id, attempt, "AI_PERSIST_FAILED");
+      return AnalysisExecution.failure(
+          "AI_PERSIST_FAILED", attempt.analysisId(), attempt.version(), row);
+    }
+  }
+
+  private AnalysisExecution executeLegacyAnalysis(
+      Inquiry inquiry, String email, String subject, String body) {
+    InquiryAnalysisResponse analysis;
+    try {
+      analysis = analyzeAndValidate(email, subject, body);
+    } catch (ResponseStatusException failure) {
+      return AnalysisExecution.failure(classifyAnalysisFailure(failure), null, null, null);
+    }
+    applyAnalysis(inquiry, analysis);
+    try {
+      repo.saveAndFlush(inquiry);
+      return AnalysisExecution.success(analysis, null, null, null);
+    } catch (RuntimeException dbFailure) {
+      return AnalysisExecution.failure("AI_PERSIST_FAILED", null, null, null);
+    }
+  }
+
+  private InquiryAnalysisResponse analyzeAndValidate(
+      String email, String subject, String body) {
     InquiryAnalysisRequest request = new InquiryAnalysisRequest(email, subject, body);
     // EN: Log only presence/length. Never log the email, subject or body values.
     // 中文：只记录是否存在与长度，绝不记录邮箱、主题或正文内容。
@@ -220,43 +356,80 @@ public class InquiryServiceImpl implements InquiryService {
         request.customerEmail() != null,
         request.subject() == null ? 0 : request.subject().length(),
         request.body() == null ? 0 : request.body().length());
+    InquiryAnalysisResponse analysis = analyzeWithPython(request);
+    // EN: Reject an incomplete or inconsistent analysis before writing any analysis result.
+    // 中文：写入任何分析结果之前，拒绝不完整或自相矛盾的分析结果。
+    validateAnalysis(analysis);
+    return analysis;
+  }
 
-    InquiryAnalysisResponse analysis;
-    try {
-      analysis = analyzeWithPython(request);
-      // EN: Reject an incomplete or inconsistent analysis before writing any analysis result.
-      // 中文：写入任何分析结果之前，拒绝不完整或自相矛盾的分析结果。
-      validateAnalysis(analysis);
-    } catch (ResponseStatusException failure) {
-      // EN: AI failed but the raw inquiry is already committed. Return a FAILED result, never a
-      // misleading "creation failed" error. The failure code is a fixed safe token.
-      // 中文：AI 失败但原始咨询已提交。返回 FAILED 结果，绝不返回误导性的“创建失败”错误。失败码是固定安全令牌。
-      String code = classifyAnalysisFailure(failure);
-      log.warn("Inquiry analysis failed: inquiryId={} code={}", original.id, code);
-      return failedResponse(original.id, code);
-    }
+  /**
+   * EN: Reanalyze an existing inquiry. The inquiry must exist (404 otherwise). The SAME pipeline as
+   * first analysis runs, appending a new version. The business status is never touched; a human
+   * category/priority is never overwritten. The response describes THIS attempt (which may fail),
+   * not the inquiry's current result. 中文：对已有咨询重新分析。咨询必须存在（否则 404），执行与首次分析完全相同的流水线并
+   * 追加新版本。业务状态绝不改动，人工分类/优先级绝不覆盖。响应描述本次尝试（可能失败），而非咨询当前结果。
+   */
+  @Override
+  public ReanalyzeResponse reanalyze(long id) {
+    Inquiry inquiry = loadInquiry(id);
+    AnalysisExecution execution =
+        executeAnalysis(inquiry, inquiry.customerEmail, inquiry.subject, inquiry.body);
 
-    // Step 5: AI succeeded -> write the analysis result back onto the persisted row. Own
-    // transaction.
-    applyAnalysis(original, analysis);
-    try {
-      Inquiry updated = repo.saveAndFlush(original);
-      log.info(
-          "Inquiry analysis persisted: inquiryId={} category={} analysisSource={}",
-          updated.id,
-          updated.category,
-          updated.analysisSource);
-      return successResponse(updated);
-    } catch (RuntimeException dbFailure) {
-      // EN: Raw inquiry remains in the database; only the AI result was not saved. Report the
-      // failure honestly so it can be retried/recovered (see T2: analysis_status persistence).
-      // 中文：原始咨询仍在库中，仅 AI 结果未保存。如实上报失败以便重试/恢复（见 T2：analysis_status 落库）。
-      log.error(
-          "Inquiry analysis persist failed: inquiryId={} errorType={}",
-          original.id,
-          dbFailure.getClass().getSimpleName());
-      return failedResponse(original.id, "AI_PERSIST_FAILED");
+    InquiryAnalysis row = execution.row();
+    if (execution.failureCode() != null) {
+      return new ReanalyzeResponse(
+          id,
+          execution.analysisId() == null ? 0L : execution.analysisId(),
+          execution.version() == null ? 0 : execution.version(),
+          "FAILED",
+          null,
+          null,
+          null,
+          execution.failureCode(),
+          row == null ? null : row.createdAt,
+          row == null ? null : row.completedAt);
     }
+    return new ReanalyzeResponse(
+        id,
+        execution.analysisId() == null ? 0L : execution.analysisId(),
+        execution.version() == null ? 0 : execution.version(),
+        "SUCCESS",
+        execution.analysis().category(),
+        execution.analysis().priority(),
+        execution.analysis().analysisSource(),
+        null,
+        row == null ? null : row.createdAt,
+        row == null ? null : row.completedAt);
+  }
+
+  /**
+   * EN: Return the whole analysis timeline. is_current comes from the inquiry's logical pointer,
+   * never from the maximum version, because the newest attempt may have failed. 中文：返回完整分析时间线。
+   * is_current 来自咨询的逻辑指针，绝不取最大版本号，因为最新尝试可能已失败。
+   */
+  @Override
+  public List<AnalysisHistoryItem> listAnalyses(long id) {
+    Inquiry inquiry = loadInquiry(id);
+    return analysisRuns.history(id).stream()
+        .map(
+            row ->
+                new AnalysisHistoryItem(
+                    row.id,
+                    row.version,
+                    row.category,
+                    row.priority,
+                    row.confidence,
+                    row.needsHumanReview,
+                    row.analysisReason,
+                    row.suggestedReply,
+                    row.analysisSource,
+                    row.status,
+                    row.errorMessage,
+                    row.createdAt,
+                    row.completedAt,
+                    row.id.equals(inquiry.currentAnalysisId)))
+        .toList();
   }
 
   /**
@@ -779,6 +952,13 @@ public class InquiryServiceImpl implements InquiryService {
     if (analysis.analysisSource() == null
         || !ALLOWED_ANALYSIS_SOURCES.contains(analysis.analysisSource())) {
       throw invalidAnalysis("analysis_source");
+    }
+    // EN: A priority, when present, must be whitelisted. Null is accepted for backward
+    //     compatibility with older Python responses (and RULE_BASED fallbacks) and is never written
+    //     to the current row by AnalysisFieldApplier. 中文：优先级只要出现就必须是白名单值；为兼容旧版 Python 响应与
+    //     RULE_BASED 降级，null 可接受，且 AnalysisFieldApplier 绝不把它写入当前行。
+    if (analysis.priority() != null && !ALLOWED_PRIORITIES.contains(analysis.priority())) {
+      throw invalidAnalysis("priority");
     }
     Boolean needsReview = analysis.needsHumanReview();
     if (needsReview == null || needsReview != REVIEW_CATEGORIES.contains(analysis.category())) {

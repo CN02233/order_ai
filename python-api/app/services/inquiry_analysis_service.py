@@ -60,6 +60,9 @@ class InquiryAnalysisService:
             suggested_reply=result.suggested_reply,
             analysis_source=AnalysisSource.AI,
             error_message=None,
+            # EN: Only an AI result may carry a priority; it was enum-validated in the analyzer.
+            # 中文：只有 AI 结果才携带优先级；其值已在 analyzer 中按枚举校验。
+            priority=result.priority,
         )
         self._log_completion(response, "succeeded", "none", started_at)
         return response
@@ -80,6 +83,9 @@ class InquiryAnalysisService:
             suggested_reply=None,  # EN: no generated reply on fallback. 中文：降级时不生成建议回复。
             analysis_source=AnalysisSource.RULE_BASED,
             error_message=reason,
+            # EN: Explicitly null: a rule result has no priority evidence and must never look like
+            #     an AI judgement. 中文：显式为 null：规则结果没有优先级证据，绝不伪装成 AI 判断。
+            priority=None,
         )
         self._log_completion(response, "failed", reason, started_at)
         return response
